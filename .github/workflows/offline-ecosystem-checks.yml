@@ -3,12 +3,14 @@ on:
   push:
     paths:
       - 'crates/horizon-offline-ecosystem-core/**'
+      - 'crates/horizon-offline-ecosystem-client/**'
       - 'external/offline-ecosystem/**'
       - '.github/workflows/offline-ecosystem-checks.yml'
       - 'Cargo.toml'
   pull_request:
     paths:
       - 'crates/horizon-offline-ecosystem-core/**'
+      - 'crates/horizon-offline-ecosystem-client/**'
       - 'external/offline-ecosystem/**'
       - '.github/workflows/offline-ecosystem-checks.yml'
       - 'Cargo.toml'
@@ -33,5 +35,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Unit tests for pure offline Rust decisions
-        run: cargo test -p horizon-offline-ecosystem-core
+      - name: Rust decisions and in-memory local player protocol
+        run: cargo test -p horizon-offline-ecosystem-core -p horizon-offline-ecosystem-client
