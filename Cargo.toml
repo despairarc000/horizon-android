@@ -19,6 +19,7 @@ members = [
     "crates/horizon-chat-filter",
     "crates/horizon-server",
     "crates/horizon-bots",
+    "crates/horizon-offline-ecosystem-core",
     "crates/horizon-assets",
     "crates/horizon-protocol",
     "crates/horizon-theme",
