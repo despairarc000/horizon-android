@@ -15,6 +15,18 @@ on:
 permissions:
   contents: read
 jobs:
+  python-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python simulation invariants
+        run: PYTHONPATH=external/offline-ecosystem/reference python -m unittest discover -s external/offline-ecosystem/reference/tests -v
+      - name: Offline multi-bot demo
+        run: PYTHONPATH=external/offline-ecosystem/reference python -m ecosim.demo
   rust-core:
     runs-on: ubuntu-latest
     timeout-minutes: 30

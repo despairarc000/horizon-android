@@ -1,25 +1,27 @@
 # Offline ecosystem foundation (pre-integration)
 
-Goal: a fully **offline, multi-bot, emergent Minecraft population** inspired by Rain World's design principles. Not an LLM agent, not a Minecraft mob reskin. Each individual has needs, personality, local observations, social memory and independent decisions. Jobs and relationships emerge from experiences rather than fixed roles.
+Goal: a fully **offline, multi-bot, emergent Minecraft population** inspired by Rain World's design principles. Not an LLM agent. Each individual has needs, personality, local observations, social memory, and independent decisions. Jobs and relationships emerge from experiences rather than fixed roles.
 
-## Status
+## Implemented
 
-- **Available:** independent, dependency-free Rust selector, three resolution tiers, bounded goal priority, unit tests; research into Horizon's player state and integrated server.
-- **Not yet available:** actual spawned player actors, real Minecraft movement/mining/crafting/building, save format, chunk transitions, Android APK or measured performance.
-- **Prior reference simulation:** a Python model with finite resource accounting, local knowledge, social encounters and save/replay was tested outside Horizon (10 Python tests passing). It is not equivalent to full Minecraft gameplay.
+- Engine-independent Rust decision selector with six Rust unit tests, three simulation resolution tiers, and bounded action priorities.
+- Python reference model (not shipped with the game): six autonomous bots demonstrating exploration, foraging, resource accounting, shelter building, food sharing, combat, fleeing, limited local perception, and deterministic serialization/replay. Ten Python tests.
+- Source research and integration recommendations in RESEARCH.md.
 
-## Run the Rust core
+The Python simulator is a small **logical room graph**, not actual Minecraft voxel terrain. The Rust core is not connected to it or to the game yet. Neither module implements a real player entity. Current bot behavior is a prototype, not a full utility AI/GOAP implementation.
 
-From the repository root: 
+## Test
 
     cargo test -p horizon-offline-ecosystem-core
+    PYTHONPATH=external/offline-ecosystem/reference python -m unittest discover -s external/offline-ecosystem/reference/tests -v
+    PYTHONPATH=external/offline-ecosystem/reference python -m ecosim.demo
 
-## Development direction
+## Development milestones
 
-1. Model bot identity and per-individual state, with deterministic, bounded scheduling.
-2. Prove one connection-free player-like actor can perform ordinary server-validated movement and block actions.
-3. Add multi-bot simulation and actor-to-actor perception/relationships.
-4. Add world-region abstraction and coherent re-realization, with persistence and resource conservation.
-5. Benchmark on Android; never assume a distant simulated event can bypass world or inventory rules.
+1. Add server-owned simulated-player state and a safe action bridge.
+2. Prove a real survival block break/place, movement, combat, and inventory roundtrip.
+3. Add individual perceptions, memory, needs, and relationships to actual server actors.
+4. Add realized/abstract/coarse transitions with persistence and real conservation invariants.
+5. Benchmark bot counts and game performance on the Android phone.
 
-See the companion source map in RESEARCH.md. No Mojang files, gameplay binaries or resources are stored here.
+No actual Minecraft bot, generated APK, or Android performance result is claimed yet. Keep vanilla rules and game resources intact.
