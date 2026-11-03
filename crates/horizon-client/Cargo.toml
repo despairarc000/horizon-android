@@ -132,6 +132,7 @@ path = "examples/probe/main.rs"
 workspace = true
 
 [dev-dependencies]
+horizon-offline-ecosystem-client = { path = "../horizon-offline-ecosystem-client" }
 horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).

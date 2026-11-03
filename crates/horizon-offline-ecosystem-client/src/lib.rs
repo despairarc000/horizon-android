@@ -22,6 +22,10 @@ pub struct State {
     pub ready: bool,
     pub received_chunks: u64,
     pub teleports: u64,
+    /// A block-use acknowledgement from Horizon; does not alone prove
+    /// placement succeeded (inspect the corresponding BlockUpdate).
+    pub last_block_ack: Option<i32>,
+    pub last_block_update: Option<([i32;3],i32)>,
 }
 
 pub struct LocalPlayer {
@@ -104,6 +108,19 @@ impl LocalPlayer {
                         _=>continue,
                     }
                 },
+                cb::CUSTOM_PAYLOAD=>{
+                    // The in-process client shares Horizon's content registry.
+                    // Echo the server's fingerprint strictly for an in-memory
+                    // connection. This is NOT proof of compatibility for a
+                    // remote client and must never be used for arbitrary TCP.
+                    let packet=cfg::Clientbound::decode(id,&body).map_err(err)?;
+                    if let cfg::Clientbound::CustomPayload(p)=packet{
+                        if p.channel=="horizon:block_registry"{
+                            conn.send(&cfg::Serverbound::CustomPayload(p).encode()).map_err(err)?;
+                        }
+                    }
+                    continue;
+                },
                 _=>continue,
             };
             conn.send(&answer.encode()).map_err(err)?;
@@ -164,6 +181,16 @@ impl LocalPlayer {
             cb::CHUNK_BATCH_FINISHED=>self.send(play::Serverbound::ChunkBatchReceived(
                 play::ChunkBatchReceived{chunks_per_tick:4.}
             ))?,
+            cb::BLOCK_CHANGED_ACK=>{
+                if let play::Clientbound::BlockChangedAck(p)=play::Clientbound::decode(id,body).map_err(err)?{
+                    self.state.last_block_ack=Some(p.sequence);
+                }
+            },
+            cb::BLOCK_UPDATE=>{
+                if let play::Clientbound::BlockUpdate(p)=play::Clientbound::decode(id,body).map_err(err)?{
+                    self.state.last_block_update=Some((p.pos,p.state));
+                }
+            },
             cb::SET_HEALTH=>{
                 if let play::Clientbound::SetHealth(p)=play::Clientbound::decode(id,body).map_err(err)?{
                     self.state.health=Some(p.health);self.state.hunger=Some(p.food);

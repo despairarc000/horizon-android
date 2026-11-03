@@ -2,6 +2,7 @@
 //! handshake, status, offline login, configuration (registries and tags),
 //! then the play state (login, chunks with light, player list, entities,
 //! block changes). Needs the prepared resources; skipped without them.
+use horizon_offline_ecosystem_client::LocalPlayer;
 use horizon_client::{
     chunk::{Chunk, MIN_Y},
     lan::{
@@ -1445,4 +1446,40 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         s.hub.guests[0].client_loaded(),
         "the packet marks it loaded"
     );
+}
+
+#[test]
+fn offline_ecosystem_player_joins_real_horizon_hub_through_memory(){
+    // Unlike the standalone fake-server tests, this exercises Horizon's
+    // actual LAN handshake, chunk scheduler, entity list and block event hub.
+    // Prepared Minecraft resources are required (existing lan_bot convention).
+    let Some(resources)=resources() else {return;};
+    let mut server=server(&resources);
+    let pipe=server.hub.lan.connect_local().expect("local in-memory connection");
+    let outcome=run(&mut server, move || {
+        let mut player=LocalPlayer::join(pipe,"Ecosystem0",3)?;
+        let deadline=Instant::now()+Duration::from_secs(20);
+        while !player.state.ready {
+            if Instant::now()>deadline{return Err("no real-world chunks after login".into());}
+            player.pump_one()?;
+        }
+        let spawn=player.state.position.ok_or("no position")?;
+        let move_to=player.walk_delta(0.2,0.0)?;
+        player.use_item_on([
+            spawn[0].floor() as i32,
+            spawn[1].floor() as i32 - 1,
+            spawn[2].floor() as i32
+        ],1,818)?;
+        let deadline=Instant::now()+Duration::from_secs(15);
+        while player.state.last_block_ack != Some(818) {
+            if Instant::now()>deadline{return Err("hub did not acknowledge block-use".into());}
+            player.pump_one()?;
+        }
+        Ok((spawn,move_to,player.state.last_block_update))
+    });
+    assert!((outcome.1[0]-outcome.0[0]-0.2).abs()<0.001);
+    assert!(server.placed.iter().any(|entry|entry.3==818),
+        "the real hub did not deliver the local player's block action");
+    // The LAN fixture places blocks to test event dispatch; this assertion
+    // does NOT claim that real survival inventory/reach were validated.
 }

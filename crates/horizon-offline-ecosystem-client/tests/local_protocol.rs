@@ -86,3 +86,36 @@ fn invalid_name_is_rejected_without_blocking() {
     let (client,_server)=Pipe::pair();
     assert!(LocalPlayer::join(client,"Bad Bot",2).is_err());
 }
+
+#[test]
+fn fingerprint_challenge_on_local_connection(){
+    let (client,server)=Pipe::pair();
+    let server=thread::spawn(move||{
+        let mut s=Connection::local(server);
+        let _=s.recv().unwrap(); // handshake
+        let (id,body)=s.recv().unwrap();
+        let login::Serverbound::Hello(h)=login::Serverbound::decode(id,&body).unwrap() else{panic!("hello");};
+        s.send(&login::Clientbound::LoginFinished(login::LoginFinished{
+            profile:login::GameProfile{uuid:offline_uuid(&h.name),name:h.name,properties:vec![]},session:123,
+        }).encode()).unwrap();
+        let _=s.recv().unwrap(); // login ack
+        let _=s.recv().unwrap(); // client information
+        let _=s.recv().unwrap(); // brand
+        let fingerprint=vec![42;32];
+        s.send(&cfg::Clientbound::SelectKnownPacks(cfg::SelectKnownPacks{packs:vec![]}).encode()).unwrap();
+        let _=s.recv().unwrap();
+        s.send(&cfg::Clientbound::CustomPayload(cfg::CustomPayload{channel:"horizon:block_registry".into(),data:fingerprint.clone()}).encode()).unwrap();
+        s.send(&cfg::Clientbound::Ping(cfg::Ping{id:0}).encode()).unwrap();
+        let (id,body)=s.recv().unwrap();
+        let cfg::Serverbound::CustomPayload(reply)=cfg::Serverbound::decode(id,&body).unwrap() else{panic!("missing fingerprint response");};
+        assert_eq!(reply.channel,"horizon:block_registry");
+        assert_eq!(reply.data,fingerprint);
+        let (id,body)=s.recv().unwrap();
+        assert!(matches!(cfg::Serverbound::decode(id,&body).unwrap(),cfg::Serverbound::Pong(cfg::Ping{id:0})));
+        s.send(&cfg::Clientbound::FinishConfiguration(Empty).encode()).unwrap();
+        let _=s.recv().unwrap();
+    });
+    let bot=LocalPlayer::join(client,"EcoHash",2).unwrap();
+    assert_eq!(bot.name(),"EcoHash");
+    server.join().unwrap();
+}

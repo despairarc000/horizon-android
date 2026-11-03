@@ -22,3 +22,10 @@ Do not implement visual movement alone and label it a player. Verification must 
 ## Policy
 
 Keep experimental code isolated; use public-source-only tests. Keep core standalone until a real player-action bridge can be tested without interfering with Horizon vanilla parity.
+
+## Native player protocol experiment (2026-11-04)
+
+- Connection-free gameplay state is still the eventual target, but a temporary `Pipe`-backed `LocalPlayer` uses the **real** `Lan::connect_local` protocol. It avoids any window, JVM or TCP. It does not spawn an independent player unless the authoritative server handles the connection.
+- The Android fork's `lan/conn.rs` enforces a `horizon:block_registry` challenge for Horizon-branded clients. The trusted same-process bot echoes that fingerprint; it is not safe for arbitrary remote clients because it doesn't prove independently loaded registry parity.
+- The `lan_bot.rs` integration test uses the real LAN hub and requires prepared game resources. It tests joining, chunk readiness, a movement packet and a block-use event. Its fixture directly places a block on receipt and therefore **does not verify survival item consumption, reach or block placement**.
+- Next: connect this client to the actual `Game::tick_lan` path, establish server-acknowledged survival actions, then schedule multiple individuals and profile CPU/memory cost.
