@@ -76,7 +76,7 @@ impl LocalPlayer {
                 login::Clientbound::Unknown(..)=>{},
             }
         }
-        conn.send(&cfg::Serverbound::ClientInformation(cfg::ClientInformation::new(view_distance)).encode()).map_err(err)?;
+        conn.send(&cfg::Serverbound::ClientInformation(cfg::ClientInformation::new(view_distance as i8)).encode()).map_err(err)?;
         let mut w=Writer::new();
         w.string("horizon");
         conn.send(&cfg::Serverbound::CustomPayload(cfg::CustomPayload{
