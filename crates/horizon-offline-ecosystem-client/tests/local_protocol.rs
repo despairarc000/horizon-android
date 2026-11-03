@@ -119,3 +119,19 @@ fn fingerprint_challenge_on_local_connection(){
     assert_eq!(bot.name(),"EcoHash");
     server.join().unwrap();
 }
+
+#[test]
+fn time_bounded_poll_allows_autonomous_decisions(){
+    use std::time::Duration;
+    let (client,server)=Pipe::pair();
+    let peer=thread::spawn(move||{
+        let _server=mock_server(Connection::local(server));
+        thread::sleep(Duration::from_millis(75));
+    });
+    let mut bot=LocalPlayer::join(client,"EcoClock",2).unwrap();
+    assert!(!bot.poll_one_timeout(Duration::from_millis(10)).unwrap());
+    assert!(bot.poll_one_timeout(Duration::ZERO).is_err());
+    assert!(bot.poll_one_timeout(Duration::from_secs(3)).is_err());
+    assert!(bot.steer_xz([1.,1.]).is_err());
+    peer.join().unwrap();
+}

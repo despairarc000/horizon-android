@@ -129,6 +129,22 @@ impl LocalPlayer {
                 chunks:HashSet::new(),announced_loaded:false})
     }
     pub fn name(&self)->&str{&self.name}
+    /// Poll the local connection for one packet without starving the bot
+    /// decision loop when the server sends no packets. The read timeout is
+    /// reset so the original blocking pump retains its meaning.
+    pub fn poll_one_timeout(&mut self,wait:std::time::Duration)->Result<bool,String>{
+        if wait.is_zero() || wait>std::time::Duration::from_millis(250){
+            return Err("poll timeout must be 1..250 ms".into());
+        }
+        self.conn.reader.set_read_timeout(Some(wait)).map_err(|e|e.to_string())?;
+        let read=self.conn.recv();
+        self.conn.reader.set_read_timeout(None).map_err(|e|e.to_string())?;
+        match read{
+            Ok((id,body))=>{self.handle_play_packet(id,&body)?;Ok(true)},
+            Err(e) if e.is_timed_out()=>Ok(false),
+            Err(e)=>Err(e.to_string()),
+        }
+    }
     pub fn pump_one(&mut self)->Result<(),String>{
         let (id,body)=self.conn.recv().map_err(|e|e.to_string())?;
         self.handle_play_packet(id,&body)
@@ -236,6 +252,23 @@ impl LocalPlayer {
         }))?;
         self.state.position=Some(next);
         Ok(next)
+    }
+    /// One conservative horizontal steering action toward a known target.
+    /// This is a low-level action, not pathfinding. It cannot cross obstacles,
+    /// climb, jump or validate a survival task, and may be corrected by server.
+    pub fn steer_xz(&mut self,target:[f64;2])->Result<bool,String>{
+        let at=self.state.position.ok_or("missing spawn")?;
+        if !target.iter().all(|x|x.is_finite()){
+            return Err("invalid steering target".into());
+        }
+        let dx=target[0]-at[0];
+        let dz=target[1]-at[2];
+        let dist=dx.hypot(dz);
+        if !dist.is_finite(){return Err("invalid steering distance".into());}
+        if dist<=0.02{return Ok(true);}
+        let step=dist.min(0.2);
+        self.walk_delta(dx/dist*step,dz/dist*step)?;
+        Ok(false)
     }
     pub fn use_item_on(&mut self,pos:[i32;3],face:i32,sequence:i32)->Result<(),String>{
         if !self.state.ready{return Err("player not ready".into());}
