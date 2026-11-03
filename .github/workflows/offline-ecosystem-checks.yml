@@ -53,3 +53,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Compile Horizon LAN and local bot integration
         run: cargo test -p horizon-client --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
+      - name: Typecheck experimental in-game integration
+        run: cargo check -p horizon-client --no-default-features --bin horizon-client

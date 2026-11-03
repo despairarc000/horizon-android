@@ -270,6 +270,11 @@ impl LocalPlayer {
         self.walk_delta(dx/dist*step,dz/dist*step)?;
         Ok(false)
     }
+    /// Mark the end of one client simulation tick. Vanilla sends this after
+    /// its tick to let the server safely schedule movement and interactions.
+    pub fn client_tick_end(&mut self)->Result<(),String>{
+        self.send(play::Serverbound::ClientTickEnd(Empty))
+    }
     pub fn use_item_on(&mut self,pos:[i32;3],face:i32,sequence:i32)->Result<(),String>{
         if !self.state.ready{return Err("player not ready".into());}
         if !(0..=5).contains(&face)||sequence<=0{return Err("invalid action".into());}

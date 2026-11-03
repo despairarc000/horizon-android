@@ -196,6 +196,8 @@ pub(super) struct LanHost {
     /// The entities the guests track, described again every tick
     /// (`lan_entities`) over last tick's states.
     pub(super) states: lan::entity::States,
+    /// Opt-in experimental local bot players. None in normal play.
+    pub(super) experimental_bots: Option<super::offline_ecosystem::ExperimentalBots>,
 }
 
 impl LanHost {
@@ -1406,6 +1408,7 @@ impl Game<'_> {
         hub.flat_world = self.world_flat;
         hub.debug_world = self.world_debug;
         let port = hub.lan.port;
+        let experimental_bots = super::offline_ecosystem::ExperimentalBots::start(&hub);
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());
         self.lan = Some(LanHost {
@@ -1432,6 +1435,7 @@ impl Game<'_> {
             native_commands: None,
             sleep_ignored: Default::default(),
             states: Default::default(),
+            experimental_bots,
         });
         self.audio.capture = Some(Vec::new());
         Ok(())
