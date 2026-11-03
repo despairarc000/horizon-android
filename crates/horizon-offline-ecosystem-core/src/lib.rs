@@ -181,3 +181,6 @@ mod tests {
         assert!(Needs::new(101, 0, 0).is_none());
     }
 }
+
+/// Deterministic room-graph prototype for multi-bot simulation.
+pub mod population;
