@@ -7,6 +7,8 @@ on:
       - 'external/offline-ecosystem/**'
       - '.github/workflows/offline-ecosystem-checks.yml'
       - 'Cargo.toml'
+      - 'crates/horizon-client/Cargo.toml'
+      - 'crates/horizon-client/tests/lan_bot.rs'
   pull_request:
     paths:
       - 'crates/horizon-offline-ecosystem-core/**'
@@ -14,6 +16,8 @@ on:
       - 'external/offline-ecosystem/**'
       - '.github/workflows/offline-ecosystem-checks.yml'
       - 'Cargo.toml'
+      - 'crates/horizon-client/Cargo.toml'
+      - 'crates/horizon-client/tests/lan_bot.rs'
 permissions:
   contents: read
 jobs:
@@ -37,3 +41,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Rust decisions and in-memory local player protocol
         run: cargo test -p horizon-offline-ecosystem-core -p horizon-offline-ecosystem-client
+
+  real-hub-compile:
+    # Exercises real Horizon networking when prepared assets are present.
+    # On normal public CI it still compiles the real LAN test but skips the
+    # runtime fixture because proprietary game resources aren't checked in.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile Horizon LAN and local bot integration
+        run: cargo test -p horizon-client --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
