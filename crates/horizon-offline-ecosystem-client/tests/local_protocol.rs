@@ -105,6 +105,77 @@ fn in_memory_join_teleport_loaded_chunk_move_and_use() {
     srv.join().unwrap();
 }
 
+/// A synthetic in-memory protocol peer verifies honest inventory-menu
+/// synchronization. This does NOT pretend that the real Minecraft crafting
+/// rules ran; a separate resource-backed survival test is still required.
+#[test]
+fn inventory_click_requires_real_server_snapshot_and_reconciliation() {
+    use horizon_protocol::item::Stack;
+    let (client,server)=Pipe::pair();
+    let peer=thread::spawn(move||{
+        let mut server=mock_server(Connection::local(server));
+        server.send(&play::Clientbound::PlayerPosition(play::PlayerPosition{
+            teleport:5,position:[1.5,65.,1.5],delta:[0.;3],
+            yaw:0.,pitch:0.,relatives:0,
+        }).encode()).unwrap();
+        let (id,body)=server.recv().unwrap();
+        assert!(matches!(
+            play::Serverbound::decode(id,&body).unwrap(),
+            play::Serverbound::AcceptTeleportation(_)
+        ));
+        let mut chunk=Writer::new();
+        chunk.varint(ids::play::clientbound::LEVEL_CHUNK_WITH_LIGHT);
+        chunk.i32(0);chunk.i32(0);
+        server.send(&chunk.data).unwrap();
+        let (id,body)=server.recv().unwrap();
+        assert!(matches!(
+            play::Serverbound::decode(id,&body).unwrap(),
+            play::Serverbound::PlayerLoaded(_)
+        ));
+        let mut slots=vec![None;46];
+        slots[36]=Some(Stack::new(7,2));
+        server.send(&play::Clientbound::ContainerSetContent(
+            play::ContainerSetContent{
+                container:0,state:4,items:slots,carried:None,
+            }
+        ).encode()).unwrap();
+        let (id,body)=server.recv().unwrap();
+        let play::Serverbound::ContainerClick(click)=
+            play::Serverbound::decode(id,&body).unwrap()
+        else {panic!("expected ordinary inventory click");};
+        assert_eq!((click.container,click.state,click.slot,click.button,click.input),
+                   (0,4,36,0,0));
+        // A real authoritative response clears the pending click; the
+        // client never credits or transfers an item optimistically.
+        server.send(&play::Clientbound::ContainerSetSlot(
+            play::ContainerSetSlot{
+                container:0,state:5,slot:36,item:None,
+            }
+        ).encode()).unwrap();
+    });
+    let mut bot=LocalPlayer::join(client,"EcoMenu",2).unwrap();
+    assert!(bot.inventory_click(36,0,0).is_err());
+    bot.pump_one().unwrap();  // real teleport
+    bot.pump_one().unwrap();  // loaded chunk
+    assert!(bot.state.ready);
+    assert!(bot.inventory_click(36,0,0).is_err());
+    bot.pump_one().unwrap();  // authoritative inventory snapshot
+    let menu=bot.inventory_menu().unwrap();
+    assert_eq!(menu.revision,4);
+    assert_eq!(menu.slots.len(),46);
+    assert_eq!(menu.slots[36].as_ref().unwrap().count,2);
+    assert!(bot.inventory_click(0,0,3).is_err()); // creative clone forbidden
+    assert!(bot.inventory_click(-1,0,0).is_err());
+    bot.inventory_click(36,0,0).unwrap();
+    assert!(bot.inventory_click_pending());
+    assert!(bot.inventory_click(1,0,0).is_err());
+    bot.pump_one().unwrap();
+    assert!(!bot.inventory_click_pending());
+    assert_eq!(bot.inventory_menu().unwrap().revision,5);
+    assert!(bot.inventory_menu().unwrap().slots[36].is_none());
+    peer.join().unwrap();
+}
+
 #[test]
 fn invalid_name_is_rejected_without_blocking() {
     let (client,_server)=Pipe::pair();
