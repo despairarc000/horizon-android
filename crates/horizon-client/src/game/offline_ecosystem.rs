@@ -480,6 +480,39 @@ fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
     })
 }
 
+/// Scavenge only actual nearby item entities published by the server.
+/// Unlike mining correlation, these can belong to *any* bot or be left
+/// behind by a previous attempt. Require a CONNECTED path to a verified
+/// pickup-position stand, not just a plausible-looking frontier.
+fn scavengable_wood_route(survey:&Survey)->Option<([f64;3],RouteStep)>{
+    let start=[
+        survey.position[0].floor() as i32,
+        survey.position[1].floor() as i32,
+        survey.position[2].floor() as i32,
+    ];
+    let mut drops:Vec<_>=survey.wood_drops.iter().copied()
+        .filter(|d|d.iter().all(|v|v.is_finite()))
+        .collect();
+    let distance=|d:[f64;3]| {
+        (d[0]-survey.position[0]).powi(2)
+            +(d[1]-survey.position[1]).powi(2)
+            +(d[2]-survey.position[2]).powi(2)
+    };
+    drops.sort_by(|a,b|distance(*a).total_cmp(&distance(*b)));
+    for drop in drops {
+        let goals:Vec<_>=survey.terrain.iter().copied().filter(|p|{
+            let feet=f64::from(p[1]);
+            drop[1]>feet-0.6 && drop[1]<feet+2.4
+                && (f64::from(p[0])+0.5-drop[0]).abs()<1.5
+                && (f64::from(p[2])+0.5-drop[2]).abs()<1.5
+        }).collect();
+        let route=first_walk_down_step(start,&goals,&survey.terrain)
+            .or_else(||first_terrain_step(start,&goals,&survey.terrain));
+        if let Some(route)=route{return Some((drop,route));}
+    }
+    None
+}
+
 impl ExperimentalBots {
     pub(super) fn start(hub:&Hub)->Option<Self>{
         let count=configured_count(
@@ -942,8 +975,61 @@ fn run_local(
             player.client_tick_end()?;
             continue;
         }
+        // A true item entity is an opportunistic resource whether it came
+        // from this bot, another bot, or an earlier abandoned harvest.
+        // Scavenging does not grant wood: only Horizon's regular pickup
+        // rules and the next authoritative inventory survey do that.
+        let intent=decide(survey,index);
+        if harvest.is_none()
+            && survey.wood_inventory<3
+            && matches!(intent,Intent::GatherWood|Intent::Explore|Intent::BuildShelter)
+        {
+            if let Some((drop,route))=scavengable_wood_route(survey){
+                let currently_touchable=(survey.position[0]-drop[0]).abs()<1.5
+                    && (survey.position[2]-drop[2]).abs()<1.5
+                    && drop[1]>survey.position[1]-0.6
+                    && drop[1]<survey.position[1]+2.4;
+                if !currently_touchable {
+                    if survey.tick%160==0 {
+                        log::info!(
+                            "Offline ecosystem {name}: scavenging observed wood drop {drop:?} via verified {route:?}"
+                        );
+                    }
+                    match route.motion {
+                        RouteMotion::Walk=>{
+                            let target=[
+                                f64::from(route.at[0])+0.5,
+                                f64::from(route.at[2])+0.5,
+                            ];
+                            steering.steer(&mut player,target);
+                        },
+                        RouteMotion::StepDown=>{
+                            if survey.tick>=descent_cooldown {
+                                if let Some(controller)=StepDownController::begin(
+                                    survey.position,route.at
+                                ){
+                                    descent=Some((controller,survey.tick));
+                                }
+                            }
+                        },
+                        RouteMotion::JumpUp=>{
+                            if survey.tick>=ascent_cooldown {
+                                if let Some(controller)=StepUpController::begin(
+                                    survey.position,route.at
+                                ){
+                                    ascent=Some((controller,survey.tick));
+                                    descent=None;
+                                }
+                            }
+                        },
+                    }
+                    player.client_tick_end()?;
+                    continue;
+                }
+            }
+        }
         let mut exploring=false;
-        match decide(survey,index){
+        match intent{
             Intent::GatherWood=>{
                 if let Some(log)=survey.nearby_log {
                     let vertical_delta=f64::from(log[1])-survey.position[1];
@@ -1379,6 +1465,27 @@ mod tests{
         };
         assert_eq!(exploratory_downhill_step(&survey,None),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
+    }
+    #[test]
+    fn scavenging_prefers_reachable_real_drops_and_skips_disconnected_items(){
+        let mut survey=Survey{
+            tick:0,on_ground:true,position:[0.5,64.0,0.5],
+            food:20,health:20.,food_inventory:0,wood_inventory:0,
+            hotbar_food_slot:None,nearby_log:None,watched_log:None,
+            ground:vec![[0,0],[1,0]],logs:vec![],
+            wood_drops:vec![[3.5,64.0,0.5]],
+            terrain:vec![[0,64,0],[1,64,0],[3,64,0]],
+        };
+        // Physically observed but disconnected items do not create paths.
+        assert_eq!(scavengable_wood_route(&survey),None);
+        survey.wood_drops.push([1.5,64.0,0.5]);
+        assert_eq!(scavengable_wood_route(&survey),Some((
+            [1.5,64.0,0.5],
+            RouteStep{at:[1,64,0],motion:RouteMotion::Walk},
+        )));
+        // An invalid or missing server item is never invented as a goal.
+        survey.wood_drops=vec![[f64::NAN,64.0,0.5]];
+        assert_eq!(scavengable_wood_route(&survey),None);
     }
     #[test]
     fn observed_drop_without_safe_pickup_stand_cannot_count_as_collected(){
