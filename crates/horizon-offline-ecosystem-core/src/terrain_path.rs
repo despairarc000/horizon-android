@@ -153,6 +153,8 @@ pub struct DescentMotion {
 /// acceleration and a final exactly-on-ground step to the safe lower tile.
 #[derive(Clone, Debug)]
 pub struct StepDownController {
+    /// The confirmed standing cell from which this transition started.
+    pub origin:[i32;3],
     pub destination: [i32;3],
     vertical_speed: f64,
 }
@@ -165,7 +167,7 @@ impl StepDownController {
         if dx+dz!=1 || i64::from(from[1])-i64::from(destination[1])!=1 {
             return None;
         }
-        Some(Self {destination,vertical_speed:0.0})
+        Some(Self {origin:from,destination,vertical_speed:0.0})
     }
     /// None means local predicted completion or a rejected/invalid position;
     /// neither counts as a verified safe landing. The caller must wait for
@@ -223,6 +225,8 @@ pub struct JumpMotion {
 /// player's feet clear the adjacent higher block.
 #[derive(Clone, Debug)]
 pub struct StepUpController {
+    /// The confirmed standing cell from which this transition started.
+    pub origin:[i32;3],
     pub destination:[i32;3],
     vertical_speed:f64,
     began:bool,
@@ -237,7 +241,7 @@ impl StepUpController {
         if dx+dz!=1 || i64::from(destination[1])-i64::from(from[1])!=1 {
             return None;
         }
-        Some(Self{destination,vertical_speed:0.0,began:false,start_y:from[1]})
+        Some(Self{origin:from,destination,vertical_speed:0.0,began:false,start_y:from[1]})
     }
     /// None means the attempted arc was invalid or did not land, NOT a
     /// successful jump. The authoritative server survey decides success.
@@ -341,6 +345,10 @@ mod tests{
     }
     #[test]
     fn descent_is_cardinal_and_exactly_one_block(){
+        assert_eq!(
+            StepDownController::begin([0.5,65.,0.5],[1,64,0]).unwrap().origin,
+            [0,65,0]
+        );
         assert!(StepDownController::begin([0.5,65.,0.5],[1,64,0]).is_some());
         assert!(StepDownController::begin([0.5,65.,0.5],[1,63,0]).is_none());
         assert!(StepDownController::begin([0.5,65.,0.5],[1,64,1]).is_none());
