@@ -360,6 +360,7 @@ mod tests{
         ));
         assert_eq!(log_candidates(origin,|p|p==[3,64,0]),vec![[3,64,0]]);
         assert!(log_candidates(origin,|_|false).is_empty());
+    }
     #[test]fn inventory_uses_only_real_item_stacks_and_hotbar_food(){
         use std::sync::Arc;
         let mut slots=vec![None;36];
@@ -375,6 +376,5 @@ mod tests{
             name=="minecraft:apple" || name=="minecraft:bread"
         );
         assert_eq!((food,wood,slot),(0,7,None));
-    }
     }
 }
