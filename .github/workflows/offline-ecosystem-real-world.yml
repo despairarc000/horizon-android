@@ -60,6 +60,8 @@ jobs:
       - name: Build test game binary
         run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
       # Compare server-observed movement after stalled-step quarantine.
+      # Test the bounded 13x13 natural-wood sensor and safe-ground frontier
+      # progression after prior seeded-world runs found zero nearby logs.
       # Navigate toward bounded, server-sensed dropped item coordinates,
       # not the guessed mined block center; preserve normal pickup rules.
       # Prefer collectable-height logs and quantify genuine item drops,
