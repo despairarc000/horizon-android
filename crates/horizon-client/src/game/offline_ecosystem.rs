@@ -45,6 +45,34 @@ struct Survey {
     /// are never treated as resources. Not yet an occlusion-aware view.
     logs: Vec<[i32; 3]>,
 }
+/// Transport-level steering evidence. Packet emission is NEVER credited as
+/// server-acknowledged movement: the next authoritative survey decides that.
+#[derive(Default)]
+struct SteeringEvidence {
+    packets_sent: u64,
+    waypoints_reached: u64,
+    rejected: u64,
+    last_error: Option<String>,
+}
+impl SteeringEvidence {
+    fn steer(&mut self, player: &mut LocalPlayer, target: [f64; 2]) -> bool {
+        match player.steer_xz(target) {
+            Ok(false) => {
+                self.packets_sent = self.packets_sent.saturating_add(1);
+                true
+            }
+            Ok(true) => {
+                self.waypoints_reached = self.waypoints_reached.saturating_add(1);
+                false
+            }
+            Err(err) => {
+                self.rejected = self.rejected.saturating_add(1);
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+}
 struct SurveySink {
     name: String,
     tx: SyncSender<Survey>,
@@ -331,6 +359,7 @@ fn run_local(
 )->Result<(),String>{
     let mut player=LocalPlayer::join(pipe,name,2)?;
     let mut exploration=ExplorationMemory::new();
+    let mut steering=SteeringEvidence::default();
     let mut next_tick=Instant::now();
     let mut last_survey=None;
     // Last-known resource locations and failed-approach history belong to
@@ -384,6 +413,15 @@ fn run_local(
                 received.tick,received.position,&walkable_height
             );
             player.state.position=Some(received.position);
+            // This reports only outgoing packet attempts and local errors.
+            // Physical progress is measured separately from server positions.
+            if received.tick%160==0 {
+                log::info!(
+                    "Offline ecosystem {name}: steering packets_sent={} waypoints_reached={} rejected={} last_error={}",
+                    steering.packets_sent,steering.waypoints_reached,steering.rejected,
+                    steering.last_error.as_deref().unwrap_or("none")
+                );
+            }
             last_survey=Some((received,Instant::now()));
         }
         if !player.state.ready||Instant::now()<next_tick{continue;}
@@ -418,7 +456,7 @@ fn run_local(
             let delta=(survey.position[0]-x).hypot(survey.position[2]-z);
             if delta>0.55 && (survey.position[1]-f64::from(probe.target[1])).abs()<1.5{
                 if let Some(waypoint)=ground_step_to_pickup(survey,probe.target){
-                    let _=player.steer_xz(waypoint);
+                    steering.steer(&mut player,waypoint);
                 }
             }
             player.client_tick_end()?;
@@ -437,7 +475,7 @@ fn run_local(
                         exploring=true;
                     } else if distance>2.3 {
                         if let Some(waypoint)=ground_step_to_log(survey,log) {
-                            if matches!(player.steer_xz(waypoint),Ok(false)){
+                            if steering.steer(&mut player,waypoint){
                                 target_memory.attempted_step(log);
                             }
                         } else {
@@ -496,7 +534,7 @@ fn run_local(
                 // This can lead well beyond the initial spawn, but only
                 // through the level-ground cells currently observed.
                 let target=[f64::from(step[0])+0.5,f64::from(step[1])+0.5];
-                let _=player.steer_xz(target);
+                steering.steer(&mut player,target);
             }
         }
         player.client_tick_end()?;
