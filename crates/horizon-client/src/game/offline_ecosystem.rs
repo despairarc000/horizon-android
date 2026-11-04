@@ -694,16 +694,29 @@ fn run_local(
                 ascent_cooldown=survey.tick.saturating_add(160);
             } else {
                 let estimated=player.state.position.unwrap_or(survey.position);
-                if let Some(motion)=controller.next(estimated){
-                    if let Err(error)=player.jump_delta(
-                        motion.dx,motion.dy,motion.dz,motion.on_ground
-                    ){
+                match controller.next(estimated) {
+                    Some(motion)=>{
+                        if let Err(error)=player.jump_delta(
+                            motion.dx,motion.dy,motion.dz,motion.on_ground
+                        ){
+                            log::info!(
+                                "Offline ecosystem {name}: uphill packet rejected: {error}"
+                            );
+                            ascent=None;
+                            ascent_cooldown=survey.tick.saturating_add(160);
+                        }
+                    },
+                    None=>{
+                        // A simulated arc that misses or exceeds its bounds
+                        // cannot be promoted to a server-confirmed landing.
+                        // Stop immediately rather than waiting 80 ticks
+                        // while generating no physical movement packets.
                         log::info!(
-                            "Offline ecosystem {name}: uphill packet rejected: {error}"
+                            "Offline ecosystem {name}: uphill arc invalid before verified landing at {target:?}"
                         );
                         ascent=None;
                         ascent_cooldown=survey.tick.saturating_add(160);
-                    }
+                    },
                 }
                 player.client_tick_end()?;
                 continue;
