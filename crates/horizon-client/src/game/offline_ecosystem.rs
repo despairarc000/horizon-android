@@ -456,6 +456,15 @@ fn run_local(
                 continue;
             }
         }
+        if harvest.as_ref().is_some_and(|e| !e.block_removed()){
+            // The STOP is only a request. Keep the watched block inside the
+            // authoritative survey window until an actual server lookup
+            // confirms its disappearance or the bounded evidence timer
+            // expires. Exploring immediately after STOP loses that proof.
+            // This is not a claim that the block was successfully mined.
+            player.client_tick_end()?;
+            continue;
+        }
         if let Some(probe)=harvest.as_ref().filter(|h|h.block_removed()){
             // Mining drops fall into the world rather than appearing in the
             // player's inventory. Move toward the former log to pick them up.
