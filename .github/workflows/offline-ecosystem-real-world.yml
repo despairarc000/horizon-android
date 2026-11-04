@@ -1,5 +1,8 @@
 name: Offline ecosystem real-world integration
 # One-off trigger: file changes, plus optional workflow dispatch when available.
+# Access-aware natural wood trial (2026-11-04): verify whether first walking to a
+# connected loaded-world pickup stand improves real drop proximity and inventory.
+# Passing admission/mining alone must never count as a successful pickup.
 # Download only official pinned Mojang inputs into ephemeral .local/.
 # No Minecraft game resources are uploaded as artifacts.
 on:
