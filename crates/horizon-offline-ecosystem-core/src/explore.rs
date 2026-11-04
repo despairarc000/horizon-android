@@ -11,6 +11,47 @@ pub const BLOCKED_STEP_TICKS: u64 = 240;
 pub const STALLED_SURVEYS: u8 = 4;
 const PROGRESS_SQUARED: f64 = 0.10 * 0.10;
 
+/// Avoid immediately undoing a real, server-confirmed one-block
+/// transition during unguided exploration. Explicit resource/pickup goals
+/// can override this preference. The single-edge memory is bounded.
+pub const VERTICAL_RETURN_TICKS:u64=120;
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+struct ConfirmedVerticalTransition {
+    from:[i32;3],
+    to:[i32;3],
+    until_tick:u64,
+}
+#[derive(Debug,Clone,Default,PartialEq,Eq)]
+pub struct VerticalTransitionMemory {
+    recent:Option<ConfirmedVerticalTransition>,
+}
+impl VerticalTransitionMemory {
+    pub fn new()->Self{Self::default()}
+    /// Only call this after an authoritative server survey verified a
+    /// supported landing, never after emitting a jump/fall packet.
+    pub fn observed_landing(&mut self,from:[i32;3],to:[i32;3],tick:u64){
+        let horizontal=(i64::from(from[0])-i64::from(to[0])).abs()
+            +(i64::from(from[2])-i64::from(to[2])).abs();
+        let vertical=(i64::from(from[1])-i64::from(to[1])).abs();
+        if horizontal==1 && vertical==1
+            && self.recent.is_none_or(|prev|tick>=prev.until_tick.saturating_sub(VERTICAL_RETURN_TICKS))
+        {
+            self.recent=Some(ConfirmedVerticalTransition{
+                from,to,until_tick:tick.saturating_add(VERTICAL_RETURN_TICKS)
+            });
+        }
+    }
+    /// The physical surface to avoid *only during exploration*, when the
+    /// current authoritative standing cell is the last transition's goal.
+    /// This expires; it cannot permanently block backtracking or survival.
+    pub fn avoid_immediate_return(
+        &self,current:[i32;3],tick:u64
+    )->Option<[i32;3]> {
+        self.recent.filter(|e|e.to==current && tick<e.until_tick)
+            .map(|e|e.from)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExplorationMemory {
     visited: BTreeMap<[i32; 2], u64>,
@@ -147,6 +188,34 @@ impl ExplorationMemory {
 mod tests {
     use super::*;
 
+    #[test]
+    fn no_ping_pong_between_newly_reached_vertical_surfaces(){
+        let a=[0,65,0];
+        let b=[1,66,0];
+        let mut m=VerticalTransitionMemory::new();
+        assert_eq!(m.avoid_immediate_return(b,101),None);
+        m.observed_landing(a,b,100);
+        assert_eq!(m.avoid_immediate_return(b,101),Some(a));
+        // The rule is scoped to the actual landing surface.
+        assert_eq!(m.avoid_immediate_return([2,66,0],101),None);
+        // Expiration permits returning along a narrow, legitimate path.
+        assert_eq!(m.avoid_immediate_return(b,220),None);
+        m.observed_landing(b,a,221);
+        assert_eq!(m.avoid_immediate_return(a,222),Some(b));
+    }
+    #[test]
+    fn only_verified_cardinal_one_block_changes_create_reverse_avoidance(){
+        let mut m=VerticalTransitionMemory::new();
+        m.observed_landing([0,64,0],[2,65,0],1);
+        m.observed_landing([0,64,0],[0,66,0],2);
+        m.observed_landing([0,64,0],[1,64,0],3);
+        assert_eq!(m.avoid_immediate_return([1,65,0],4),None);
+        m.observed_landing([0,64,0],[1,65,0],5);
+        assert_eq!(m.avoid_immediate_return([1,65,0],6),Some([0,64,0]));
+        // A stale survey must not overwrite a newer confirmed transition.
+        m.observed_landing([2,65,0],[3,66,0],4);
+        assert_eq!(m.avoid_immediate_return([1,65,0],6),Some([0,64,0]));
+    }
     #[test]
     fn explores_beyond_initial_spawn_neighborhood() {
         let mut e = ExplorationMemory::new();
