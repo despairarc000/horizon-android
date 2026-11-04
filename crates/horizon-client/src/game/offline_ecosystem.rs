@@ -239,12 +239,31 @@ fn ground_step_to_log(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
     let step=first_ground_step(start,&goals,&survey.ground)?;
     Some([f64::from(step[0])+0.5,f64::from(step[1])+0.5])
 }
-fn ground_step_to_pickup(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
+/// Locate a real nearby wood drop whose spawn or subsequent physics place
+/// it close to the watched break. This is spatial evidence, not ownership.
+fn watched_wood_drop(survey:&Survey,log:[i32;3])->Option<[f64;3]>{
+    let center=[f64::from(log[0])+0.5,f64::from(log[1])+0.5,f64::from(log[2])+0.5];
+    survey.wood_drops.iter().copied()
+        .filter(|p|p.iter().all(|v|v.is_finite()))
+        .filter(|p|(p[0]-center[0]).abs()<2.0
+            && (p[1]-center[1]).abs()<2.5
+            && (p[2]-center[2]).abs()<2.0)
+        .min_by(|a,b|{
+            let score=|p:[f64;3]|(p[0]-center[0]).powi(2)
+                +(p[1]-center[1]).powi(2)+(p[2]-center[2]).powi(2);
+            score(*a).total_cmp(&score(*b))
+        })
+}
+/// Safe standing cells are supplied by Horizon's loaded-world collision
+/// survey. The actual item height must fit the game's pickup bounding box.
+fn ground_step_to_drop(survey:&Survey, drop:[f64;3])->Option<[f64;2]>{
+    if drop[1]<=survey.position[1]-0.6 || drop[1]>=survey.position[1]+2.4 {
+        return None;
+    }
     let start=[survey.position[0].floor() as i32,survey.position[2].floor() as i32];
     let goals:Vec<_>=survey.ground.iter().copied().filter(|[x,z]|{
-        let dx=i64::from(*x)-i64::from(log[0]);
-        let dz=i64::from(*z)-i64::from(log[2]);
-        dx*dx+dz*dz<=1
+        (f64::from(*x)+0.5-drop[0]).abs()<1.5
+            && (f64::from(*z)+0.5-drop[2]).abs()<1.5
     }).collect();
     let step=first_ground_step(start,&goals,&survey.ground)?;
     Some([f64::from(step[0])+0.5,f64::from(step[1])+0.5])
@@ -503,14 +522,15 @@ fn run_local(
             continue;
         }
         if let Some(probe)=harvest.as_ref().filter(|h|h.block_removed()){
-            // Mining drops fall into the world rather than appearing in the
-            // player's inventory. Move toward the former log to pick them up.
-            let x=f64::from(probe.target[0])+0.5;
-            let z=f64::from(probe.target[2])+0.5;
-            let delta=(survey.position[0]-x).hypot(survey.position[2]-z);
-            if delta>0.55 && (survey.position[1]-f64::from(probe.target[1])).abs()<1.5{
-                if let Some(waypoint)=ground_step_to_pickup(survey,probe.target){
-                    steering.steer(&mut player,waypoint);
+            // Travel toward the actual local dropped entity, never a guessed
+            // block center. No flight, teleport, or extra inventory allowed.
+            if let Some(drop)=watched_wood_drop(survey,probe.target) {
+                let already_near=(survey.position[0]-drop[0]).abs()<1.25
+                    && (survey.position[2]-drop[2]).abs()<1.25;
+                if !already_near {
+                    if let Some(waypoint)=ground_step_to_drop(survey,drop){
+                        steering.steer(&mut player,waypoint);
+                    }
                 }
             }
             player.client_tick_end()?;
@@ -600,6 +620,21 @@ fn run_local(
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn ground_route_to_drop_requires_observed_item_and_real_pickup_height(){
+        let mut survey=Survey {
+            tick:0,position:[0.5,64.0,0.5],food:20,health:20.0,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],
+            wood_drops:vec![[2.6,64.1,0.5]],ground:vec![[0,0],[1,0],[2,0]],
+        };
+        assert_eq!(watched_wood_drop(&survey,[2,64,0]),Some([2.6,64.1,0.5]));
+        assert_eq!(ground_step_to_drop(&survey,[2.6,64.1,0.5]),Some([1.5,0.5]));
+        assert_eq!(ground_step_to_drop(&survey,[2.6,63.0,0.5]),None);
+        survey.ground=vec![[0,0],[2,0]];
+        assert_eq!(ground_step_to_drop(&survey,[2.6,64.1,0.5]),None);
+        survey.wood_drops=vec![[7.5,64.0,0.5]];
+        assert_eq!(watched_wood_drop(&survey,[2,64,0]),None);
+    }
     #[test]fn opt_in_must_be_bounded(){
         assert_eq!(configured_count(None),0);
         assert_eq!(configured_count(Some("0")),0);
