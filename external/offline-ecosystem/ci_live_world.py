@@ -324,6 +324,42 @@ def blocked_pickup_report(lines: list[str]) -> dict[str, int]:
     }
 
 
+ACCESS_CLASSIFICATION = re.compile(
+    r"Offline ecosystem (EcoAI[01]): mining attempt started at "
+    r"\[[^\]]+\] access_rank=(\d+)"
+)
+
+
+def harvest_access_report(lines: list[str]) -> dict[str, int]:
+    """Only server-observed verified/clearable access may start mining.
+
+    Access rank is pre-harvest *planning* evidence, never a completed
+    server pickup. This detects unguarded mining regressions on live runs.
+    """
+    result = {
+        "attempts": 0,
+        "connected_pickup_stand": 0,
+        "clearing_opens_stand": 0,
+        "mined_without_known_access": 0,
+        "unclassified_attempts": 0,
+    }
+    for line in lines:
+        if "mining attempt started at" not in line:
+            continue
+        result["attempts"] += 1
+        match = ACCESS_CLASSIFICATION.search(line)
+        if match is None:
+            result["unclassified_attempts"] += 1
+        else:
+            rank = int(match.group(2))
+            key = {
+                0: "connected_pickup_stand",
+                1: "clearing_opens_stand",
+            }.get(rank, "mined_without_known_access")
+            result[key] += 1
+    return result
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -419,13 +455,18 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Physical drops and pickup geometry (not confirmed inventory): {item_pickup_report(lines)}")
     print(f"Inaccessible dropped item recovery (no pickup): {blocked_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
+    access=harvest_access_report(lines)
+    print(f"Preharvest resource-access classification (not pickup proof): {access}")
+    access_ok=access["mined_without_known_access"]==0 and access["unclassified_attempts"]==0
+    if not access_ok:
+        print("ERROR: mining proceeded without a verified or provisional access route")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
     movement_ok, movement_note = confirm_observed_exploration(
         lines, min_bots, excursion_blocks
     )
     print(f"Authoritative movement acceptance: {movement_note}")
-    return 0 if reached and held_for_requested_period and movement_ok else 1
+    return 0 if reached and held_for_requested_period and movement_ok and access_ok else 1
 
 
 def main() -> int:
