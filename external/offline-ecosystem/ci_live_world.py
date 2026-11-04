@@ -180,6 +180,36 @@ def server_mining_report(lines: list[str]) -> dict[str,int]:
     return result
 
 
+DESTROY_RESULT = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server destroy result=(.*?) "
+    r"target=\[[^\]]+\] world_changed=(true|false) "
+    r"after_block=([^\s]+) after_air=(true|false)"
+)
+
+
+def server_destroy_report(lines: list[str]) -> dict[str, int]:
+    """Only an observed state mutation can establish block removal."""
+    result = {
+        "destroy_invocations": 0,
+        "world_mutations_observed": 0,
+        "world_unchanged": 0,
+        "actor_unavailable": 0,
+        "returned_errors": 0,
+        "became_air": 0,
+    }
+    for line in lines:
+        if not (match := DESTROY_RESULT.search(line)):
+            continue
+        _, outcome, changed, _, air = match.groups()
+        result["destroy_invocations"] += 1
+        result["world_mutations_observed"] += int(changed == "true")
+        result["world_unchanged"] += int(changed == "false")
+        result["actor_unavailable"] += int(outcome == "actor-unavailable")
+        result["returned_errors"] += int(outcome.startswith("error:"))
+        result["became_air"] += int(air == "true")
+    return result
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -269,6 +299,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Terrain elevation and authoritative movement: {terrain_report(lines)}")
     print(f"Bot steering transport diagnostics (not confirmed motion): {steering_report(lines)}")
     print(f"Server-side survival mining decisions: {server_mining_report(lines)}")
+    print(f"Actual server destruction outcomes: {server_destroy_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
