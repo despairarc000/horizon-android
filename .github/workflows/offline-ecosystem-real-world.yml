@@ -1,5 +1,7 @@
 name: Offline ecosystem real-world integration
 # One-off trigger: file changes, plus optional workflow dispatch when available.
+# Multi-edge vertical loop regression: verify server-observed plateau transitions
+# do not repeat indefinitely; check actual wood inventory separately.
 # Connected wood-only trial (2026-11-04): confirm that the bot refuses
 # zero-access logs unless removing one opens a collision-safe standing surface.
 # Require real item and inventory evidence before calling harvest complete.
