@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from ci_live_world import check_events,terrain_report
+from ci_live_world import check_events,terrain_report,steering_report
 
 def login(name, eid):
     return f"[Server thread/INFO]: {name}[/127.0.0.1:0] logged in with entity id {eid} at (0,64,0)\n"
@@ -30,6 +30,21 @@ class RealWorldLogTests(unittest.TestCase):
 
     def test_thread_creation_alone_is_not_accepted(self):
         self.assertFalse(check_events(["Offline ecosystem: started 2 opt-in local bots\n"])[0])
+
+class SteeringTelemetryTests(unittest.TestCase):
+    def test_counts_packet_emissions_without_inventing_movement(self):
+        lines=[
+            "Offline ecosystem EcoAI0: steering packets_sent=8 waypoints_reached=0 rejected=2 last_error=chunk unavailable",
+            "Offline ecosystem EcoAI0: steering packets_sent=18 waypoints_reached=1 rejected=3 last_error=none",
+            "Offline ecosystem EcoAI1: steering packets_sent=0 waypoints_reached=0 rejected=9 last_error=current chunk not ready",
+        ]
+        report=steering_report(lines)
+        self.assertEqual(report["EcoAI0"],{
+            "reported":True,"packets_sent":18,"waypoints_reached":1,
+            "rejected":3,"last_error":"none",
+        })
+        self.assertEqual(report["EcoAI1"]["rejected"],9)
+        self.assertEqual(steering_report([])["EcoAI0"],{"reported":False})
 
 class TerrainProbeTests(unittest.TestCase):
     def test_reports_validated_elevations_and_actual_displacement(self):
