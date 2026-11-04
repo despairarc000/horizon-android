@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ci_live_world import (
     check_events, terrain_report, steering_report, server_mining_report,
-    confirm_observed_exploration,
+    server_destroy_report, confirm_observed_exploration,
 )
 
 def login(name, eid):
@@ -69,6 +69,29 @@ class MiningDiagnosisTests(unittest.TestCase):
         self.assertEqual(result["stops_delay"],1)
         self.assertEqual(result["stops_other"],1)
         self.assertEqual(server_mining_report([])["server_starts_observed"],0)
+
+class DestroyEvidenceTests(unittest.TestCase):
+    def test_server_break_decision_cannot_substitute_for_real_world_change(self):
+        lines=[
+            "Offline ecosystem EcoAI0: server mining STOP target=[0, 64, 0] elapsed_ticks=Some(90) progress_per_tick=0.01667 decision=Break is_air=false",
+            "Offline ecosystem EcoAI0: server destroy result=ok target=[0, 64, 0] world_changed=false after_block=minecraft:oak_log after_air=false",
+            "Offline ecosystem EcoAI1: server destroy result=error:chunk unavailable target=[1, 64, 0] world_changed=false after_block=minecraft:oak_log after_air=false",
+            "Offline ecosystem EcoAI0: server destroy result=ok target=[2, 64, 0] world_changed=true after_block=minecraft:air after_air=true",
+        ]
+        result=server_destroy_report(lines)
+        self.assertEqual(result["destroy_invocations"],3)
+        self.assertEqual(result["world_mutations_observed"],1)
+        self.assertEqual(result["world_unchanged"],2)
+        self.assertEqual(result["returned_errors"],1)
+        self.assertEqual(result["became_air"],1)
+        self.assertEqual(server_destroy_report(lines[:1])["destroy_invocations"],0)
+
+    def test_actor_unavailable_not_mistaken_for_world_change(self):
+        result=server_destroy_report([
+            "Offline ecosystem EcoAI1: server destroy result=actor-unavailable target=[0, 64, 0] world_changed=false after_block=minecraft:oak_log after_air=false"
+        ])
+        self.assertEqual(result["actor_unavailable"],1)
+        self.assertEqual(result["world_mutations_observed"],0)
 
 class TerrainProbeTests(unittest.TestCase):
     def test_reports_validated_elevations_and_actual_displacement(self):
