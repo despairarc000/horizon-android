@@ -41,10 +41,26 @@ class TerrainProbeTests(unittest.TestCase):
         result=terrain_report(lines)
         self.assertEqual(result["EcoAI0"]["samples"],2)
         self.assertEqual(result["EcoAI0"]["horizontal_displacement"],2.0)
+        self.assertEqual(result["EcoAI0"]["max_sampled_excursion"],2.0)
+        self.assertEqual(result["EcoAI0"]["sampled_path_length"],2.0)
+        self.assertEqual(result["EcoAI0"]["min_sampled_y"],67.0)
+        self.assertEqual(result["EcoAI0"]["max_sampled_y"],68.0)
         self.assertEqual(result["EcoAI0"]["first_lower_stands"],17)
         self.assertEqual(result["EcoAI0"]["first_higher_stands"],9)
         self.assertFalse(result["EcoAI0"]["initial_column_standable"])
         self.assertEqual(result["EcoAI1"]["horizontal_displacement"],0)
+
+    def test_round_trip_reports_observed_exploration_even_at_spawn(self):
+        lines=[
+            "Offline ecosystem EcoAI0: first authoritative survey at 0.50,64.00,0.50 logs=0 ground_tiles=2 terrain_down=0 terrain_up=2 current_ground=true",
+            "Offline ecosystem EcoAI0: exploration survey position 2.50,64.00,0.50 logs=0 ground_tiles=4 terrain_down=0 terrain_up=2 current_ground=true",
+            "Offline ecosystem EcoAI0: exploration survey position 0.50,64.00,0.50 logs=0 ground_tiles=3 terrain_down=0 terrain_up=2 current_ground=true",
+        ]
+        result=terrain_report(lines)["EcoAI0"]
+        self.assertEqual(result["horizontal_displacement"],0.0)
+        self.assertEqual(result["max_sampled_excursion"],2.0)
+        self.assertEqual(result["sampled_path_length"],4.0)
+        self.assertEqual(result["samples"],3)
 
     def test_does_not_infer_unreported_movement(self):
         self.assertEqual(terrain_report([])["EcoAI0"],{"samples":0,"horizontal_displacement":0.0})
