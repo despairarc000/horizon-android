@@ -4179,6 +4179,7 @@ impl Game<'_> {
                 self.res.facts().is_air(after)
             );
             if let Some(before_id)=prior_entity_id{
+                let new_drops=self.dropped.iter().filter(|d|d.id>before_id).count();
                 let items:Vec<_>=self.dropped.iter()
                     .filter(|d|d.id>before_id)
                     .take(8)
@@ -4189,7 +4190,7 @@ impl Game<'_> {
                     .collect();
                 log::info!(
                     "Offline ecosystem {name}: server destroy drop_entities={} sample={}",
-                    items.len(),items.join(";")
+                    new_drops,items.join(";")
                 );
             }
         }
