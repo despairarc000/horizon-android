@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from ci_live_world import check_events,terrain_report,steering_report
+from ci_live_world import check_events,terrain_report,steering_report,server_mining_report
 
 def login(name, eid):
     return f"[Server thread/INFO]: {name}[/127.0.0.1:0] logged in with entity id {eid} at (0,64,0)\n"
@@ -45,6 +45,27 @@ class SteeringTelemetryTests(unittest.TestCase):
         })
         self.assertEqual(report["EcoAI1"]["rejected"],9)
         self.assertEqual(steering_report([])["EcoAI0"],{"reported":False})
+
+class MiningDiagnosisTests(unittest.TestCase):
+    def test_guards_and_server_stop_outcomes_are_separate_from_harvest(self):
+        lines=[
+            "Offline ecosystem EcoAI0: server mining START target=[-34, 82, 4] in_reach=false spawn_protected=false inside_border=true spectator=false",
+            "Offline ecosystem EcoAI0: server mining START target=[-35, 82, 4] in_reach=true spawn_protected=true inside_border=true spectator=false",
+            "Offline ecosystem EcoAI1: server mining START target=[0, 64, 0] in_reach=true spawn_protected=false inside_border=false spectator=false",
+            "Offline ecosystem EcoAI0: server mining STOP target=[-35, 82, 4] elapsed_ticks=Some(85) progress_per_tick=0.00500 decision=Delay(12) is_air=false",
+            "Offline ecosystem EcoAI0: server mining STOP target=[-35, 82, 4] elapsed_ticks=Some(90) progress_per_tick=0.02000 decision=Break is_air=false",
+            "Offline ecosystem EcoAI1: server mining STOP target=[0, 64, 0] elapsed_ticks=None progress_per_tick=0.00000 decision=Other is_air=false",
+        ]
+        result=server_mining_report(lines)
+        self.assertEqual(result["server_starts_observed"],3)
+        self.assertEqual(result["starts_out_of_reach"],1)
+        self.assertEqual(result["starts_spawn_protected"],1)
+        self.assertEqual(result["starts_outside_border"],1)
+        self.assertEqual(result["stops_observed"],3)
+        self.assertEqual(result["stops_break"],1)
+        self.assertEqual(result["stops_delay"],1)
+        self.assertEqual(result["stops_other"],1)
+        self.assertEqual(server_mining_report([])["server_starts_observed"],0)
 
 class TerrainProbeTests(unittest.TestCase):
     def test_reports_validated_elevations_and_actual_displacement(self):
