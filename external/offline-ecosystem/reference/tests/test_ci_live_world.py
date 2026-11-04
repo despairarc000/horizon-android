@@ -3,7 +3,10 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from ci_live_world import check_events,terrain_report,steering_report,server_mining_report
+from ci_live_world import (
+    check_events, terrain_report, steering_report, server_mining_report,
+    confirm_observed_exploration,
+)
 
 def login(name, eid):
     return f"[Server thread/INFO]: {name}[/127.0.0.1:0] logged in with entity id {eid} at (0,64,0)\n"
@@ -97,6 +100,23 @@ class TerrainProbeTests(unittest.TestCase):
         self.assertEqual(result["max_sampled_excursion"],2.0)
         self.assertEqual(result["sampled_path_length"],4.0)
         self.assertEqual(result["samples"],3)
+
+    def test_strict_movement_gate_excludes_login_only_and_packet_attempts(self):
+        only_login=[
+            "Offline ecosystem: started 2 opt-in local bots",
+            login("EcoAI0",2), login("EcoAI1",3),
+            survey("EcoAI0"), survey("EcoAI1"),
+            "Offline ecosystem EcoAI0: steering packets_sent=999 waypoints_reached=0 rejected=0 last_error=none",
+        ]
+        ok,detail=confirm_observed_exploration(only_login)
+        self.assertFalse(ok)
+        self.assertIn("0/2",detail)
+        progress=[
+            "Offline ecosystem EcoAI0: first authoritative survey at -2.50,64.00,1.50 logs=0 ground_tiles=4 terrain_down=0 terrain_up=2 current_ground=true",
+            "Offline ecosystem EcoAI0: exploration survey position 0.50,64.00,1.50 logs=0 ground_tiles=6 terrain_down=0 terrain_up=2 current_ground=true",
+        ]
+        self.assertTrue(confirm_observed_exploration(progress)[0])
+        self.assertFalse(confirm_observed_exploration(progress,min_bots=2)[0])
 
     def test_does_not_infer_unreported_movement(self):
         self.assertEqual(terrain_report([])["EcoAI0"],{"samples":0,"horizontal_displacement":0.0})
