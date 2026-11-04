@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ci_live_world import (
     check_events, terrain_report, steering_report, server_mining_report,
-    server_destroy_report, item_pickup_report, downhill_report, uphill_report, blocked_pickup_report, confirm_observed_exploration,
+    server_destroy_report, item_pickup_report, downhill_report, uphill_report, blocked_pickup_report, harvest_access_report, confirm_observed_exploration,
 )
 
 def login(name, eid):
@@ -69,6 +69,32 @@ class MiningDiagnosisTests(unittest.TestCase):
         self.assertEqual(result["stops_delay"],1)
         self.assertEqual(result["stops_other"],1)
         self.assertEqual(server_mining_report([])["server_starts_observed"],0)
+
+class AccessGatingTests(unittest.TestCase):
+    def test_records_exactly_qualified_mining_without_imaginary_pickup(self):
+        lines=[
+            "Offline ecosystem EcoAI0: mining attempt started at [1, 64, 0] access_rank=0 connected_pickup_stands=2 cleared_log_route=None pickup_route=Some(...)",
+            "Offline ecosystem EcoAI1: mining attempt started at [3, 63, 2] access_rank=1 connected_pickup_stands=0 cleared_log_route=Some(...) pickup_route=None",
+            "Offline ecosystem EcoAI1: exact server block observation confirmed target no longer log at [3, 63, 2]",
+        ]
+        summary=harvest_access_report(lines)
+        self.assertEqual(summary,{
+            "attempts":2,"connected_pickup_stand":1,
+            "clearing_opens_stand":1,"mined_without_known_access":0,
+            "unclassified_attempts":0,
+        })
+
+    def test_unreachable_and_missing_classifications_are_not_accepted(self):
+        lines=[
+            "Offline ecosystem EcoAI0: mining attempt started at [2, 64, 0] access_rank=2 connected_pickup_stands=0",
+            "Offline ecosystem EcoAI1: mining attempt started at [3, 64, 0]",
+        ]
+        result=harvest_access_report(lines)
+        self.assertEqual(result["attempts"],2)
+        self.assertEqual(result["mined_without_known_access"],1)
+        self.assertEqual(result["unclassified_attempts"],1)
+        self.assertEqual(harvest_access_report([])["attempts"],0)
+
 
 class DestroyEvidenceTests(unittest.TestCase):
     def test_server_break_decision_cannot_substitute_for_real_world_change(self):
