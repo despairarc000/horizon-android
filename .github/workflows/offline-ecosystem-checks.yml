@@ -1,4 +1,7 @@
 name: Offline ecosystem foundation
+concurrency:
+  group: eco-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 on:
   push:
     paths:
@@ -7,6 +10,9 @@ on:
       - 'external/offline-ecosystem/**'
       - '.github/workflows/offline-ecosystem-checks.yml'
       - 'Cargo.toml'
+      - 'crates/horizon-client/src/game.rs'
+      - 'crates/horizon-client/src/game/lan.rs'
+      - 'crates/horizon-client/src/game/offline_ecosystem.rs'
       - 'crates/horizon-client/Cargo.toml'
       - 'crates/horizon-client/tests/lan_bot.rs'
   pull_request:
@@ -16,6 +22,9 @@ on:
       - 'external/offline-ecosystem/**'
       - '.github/workflows/offline-ecosystem-checks.yml'
       - 'Cargo.toml'
+      - 'crates/horizon-client/src/game.rs'
+      - 'crates/horizon-client/src/game/lan.rs'
+      - 'crates/horizon-client/src/game/offline_ecosystem.rs'
       - 'crates/horizon-client/Cargo.toml'
       - 'crates/horizon-client/tests/lan_bot.rs'
 permissions:
