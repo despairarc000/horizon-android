@@ -10,6 +10,11 @@ pub const MAX_BLOCKED_STEPS: usize = 16;
 pub const BLOCKED_STEP_TICKS: u64 = 240;
 pub const STALLED_SURVEYS: u8 = 4;
 const PROGRESS_SQUARED: f64 = 0.10 * 0.10;
+/// If no usable wood is observed and the *server-reported* position has
+/// stayed within a small neighborhood this long, try a safe vertical exit
+/// rather than wandering forever among the same flat cells.
+pub const CONFINED_SEARCH_TICKS:u64=240;
+const CONFINED_SEARCH_RADIUS_SQ:f64=25.0;
 
 /// Avoid immediately undoing a real, server-confirmed one-block
 /// transition during unguided exploration. Explicit resource/pickup goals
@@ -83,6 +88,7 @@ pub struct ExplorationMemory {
     last_sample: Option<(u64, [f64; 2])>,
     attempted_step: Option<[i32; 2]>,
     stagnant_surveys: u8,
+    resource_search_anchor:Option<(u64,[f64;2])>,
 }
 
 impl ExplorationMemory {
@@ -156,6 +162,32 @@ impl ExplorationMemory {
         self.last_sample = Some((tick, position));
         self.attempted_step = None;
         blocked
+    }
+
+    /// Observe whether this individual is confined while it seeks a usable
+    /// natural resource. Only authoritative positions and *new* surveys are
+    /// admitted. This is not a claim that a higher/lower route exists; the
+    /// existing collision-verified planner must still choose each step.
+    pub fn resource_search_confined(
+        &mut self,tick:u64,position:[f64;2],usable_wood_observed:bool
+    )->bool{
+        if !position.iter().all(|x|x.is_finite()){return false;}
+        if usable_wood_observed{
+            self.resource_search_anchor=Some((tick,position));
+            return false;
+        }
+        let Some((start,anchor))=self.resource_search_anchor else {
+            self.resource_search_anchor=Some((tick,position));
+            return false;
+        };
+        if tick<start{return false;}
+        let dx=position[0]-anchor[0];
+        let dz=position[1]-anchor[1];
+        if dx*dx+dz*dz>=CONFINED_SEARCH_RADIUS_SQ{
+            self.resource_search_anchor=Some((tick,position));
+            return false;
+        }
+        tick.saturating_sub(start)>=CONFINED_SEARCH_TICKS
     }
 
     /// Were all CURRENTLY REACHABLE, observed level-ground cells actually
@@ -286,6 +318,20 @@ mod tests {
         // A stale survey must not overwrite a newer confirmed transition.
         m.observed_landing([2,65,0],[3,66,0],4);
         assert_eq!(m.avoid_immediate_return([1,65,0],6),Some([0,64,0]));
+    }
+    #[test]
+    fn confined_wood_search_uses_real_displacement_and_observed_resources(){
+        let mut memory=ExplorationMemory::new();
+        assert!(!memory.resource_search_confined(1,[0.5,0.5],false));
+        assert!(!memory.resource_search_confined(240,[1.5,0.5],false));
+        assert!(memory.resource_search_confined(241,[1.5,0.5],false));
+        // A real excursion, unlike attempted movement packets, restarts the
+        // bounded search interval and allows normal flat exploration again.
+        assert!(!memory.resource_search_confined(249,[5.5,0.5],false));
+        assert!(!memory.resource_search_confined(490,[5.5,0.5],true));
+        assert!(!memory.resource_search_confined(491,[5.5,0.5],false));
+        assert!(!memory.resource_search_confined(300,[5.5,0.5],false));
+        assert!(!memory.resource_search_confined(800,[f64::NAN,0.5],false));
     }
     #[test]
     fn flat_exhaustion_requires_real_visits_not_proposed_waypoints(){
