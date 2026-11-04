@@ -298,7 +298,7 @@ mod tests{
         assert_eq!(decide(&survey,0),Intent::GatherWood);
         survey.food=4;
         assert_eq!(decide(&survey,0),Intent::Explore);
-
+    }
     #[test]fn local_log_survey_is_bounded_and_nearest_first(){
         let origin=[0,64,0];
         let all=log_candidates(origin,|_|true);
@@ -311,6 +311,5 @@ mod tests{
         ));
         assert_eq!(log_candidates(origin,|p|p==[3,64,0]),vec![[3,64,0]]);
         assert!(log_candidates(origin,|_|false).is_empty());
-    }
     }
 }
