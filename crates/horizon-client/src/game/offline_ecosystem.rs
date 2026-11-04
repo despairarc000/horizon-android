@@ -19,6 +19,7 @@ use ecosystem_core::{
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
     explore::{ExplorationMemory,VerticalTransitionMemory},
+    social::{SocialMemory,PeerSighting},
     terrain_path::{first_walk_down_step,first_terrain_step,best_walk_down_frontier,RouteMotion,RouteStep,StepDownController,StepUpController},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
@@ -29,6 +30,10 @@ use horizon_offline_ecosystem_client::LocalPlayer;
 #[derive(Clone, Debug, PartialEq)]
 struct Survey {
     tick: u64,
+    self_id:u128,
+    /// Only other actually loaded experimental survival players, observed
+    /// within eight server blocks in the same dimension.
+    peers:Vec<PeerSighting>,
     /// The server accepted the actual ground-contact state. A matching Y
     /// coordinate during a jump arc does not prove a completed landing.
     on_ground: bool,
@@ -670,6 +675,19 @@ impl ExperimentalBots {
             ) else {continue;};
             let pos=guest.position;
             if !pos.iter().all(|x|x.is_finite()){continue;}
+            // Only same-dimension, nearby, truly loaded actors are visible.
+            // A headless bot does not receive every player in the world.
+            let mut peers:Vec<_>=guests.iter().filter(|other|
+                other.uuid!=guest.uuid && other.name.starts_with("EcoAI")
+                && other.dimension==guest.dimension
+                && other.placed && other.loaded && !other.loading
+                && other.position.iter().all(|v|v.is_finite())
+                && other.position.iter().zip(pos).map(|(x,y)|(x-y).powi(2)).sum::<f64>()<=64.0
+            ).map(|other|PeerSighting{
+                id:other.uuid,position:other.position
+            }).collect();
+            peers.sort_by_key(|p|p.id);
+            peers.truncate(8);
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
             let terrain=terrain_candidates(center,&mut is_standable);
             let connected:std::collections::BTreeSet<_>=
@@ -718,6 +736,8 @@ impl ExperimentalBots {
             // is behind, discard instead of blocking the game tick.
             let sent=sink.tx.try_send(Survey{
                 tick:self.survey_ticks,
+                self_id:guest.uuid,
+                peers,
                 on_ground:guest.on_ground,
                 position:pos,
                 health:guest.health,
@@ -765,6 +785,7 @@ fn run_local(
     let mut player=LocalPlayer::join(pipe,name,2)?;
     let mut exploration=ExplorationMemory::new();
     let mut resource_confined=false;
+    let mut social=SocialMemory::new();
     let mut vertical_memory=VerticalTransitionMemory::new();
     let mut steering=SteeringEvidence::default();
     let mut next_tick=Instant::now();
@@ -793,6 +814,17 @@ fn run_local(
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
         for mut received in rx.try_iter(){
+            // Non-omniscient, per-individual relationship/sighting memory.
+            // Seeing a peer never fabricates help, harm or trust changes.
+            social.observe(
+                received.tick,received.self_id,received.position,&received.peers
+            );
+            if received.tick%160==0 && !received.peers.is_empty(){
+                log::info!(
+                    "Offline ecosystem {name}: verified local social sightings={} known_peers={}",
+                    received.peers.len(),social.known_count()
+                );
+            }
             if let Some(probe)=harvest.as_mut(){
                 let exists=received.watched_log.and_then(|(pos,is_log)|
                     (pos==probe.target).then_some(is_log));
@@ -1380,7 +1412,7 @@ fn run_local(
 mod tests{
     use super::*;
     #[test]fn ground_route_to_drop_requires_observed_item_and_real_pickup_height(){
-        let mut survey=Survey {
+        let mut survey=Survey { self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.0,0.5],food:20,health:20.0,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
@@ -1397,7 +1429,7 @@ mod tests{
     }
     #[test]
     fn lower_real_item_routes_as_descent_without_making_the_player_fly(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.0,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
@@ -1418,7 +1450,7 @@ mod tests{
             [0,65,0],[0,65,1],[0,65,2],[1,65,2],
             [2,65,2],[2,64,1],[2,64,0],
         ];
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
@@ -1429,7 +1461,7 @@ mod tests{
     }
     #[test]
     fn lower_drop_outside_local_pickup_area_uses_verified_3d_frontier(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.0,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
@@ -1454,7 +1486,7 @@ mod tests{
         assert_eq!(configured_count(Some("wrong")),0);
     }
     #[test]fn decision_uses_only_observed_food_health_and_wood(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,
             on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
@@ -1472,7 +1504,7 @@ mod tests{
     }
     #[test]
     fn rejects_unreachable_visible_trees_but_keeps_mineable_alternative(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
@@ -1492,7 +1524,7 @@ mod tests{
     }
     #[test]
     fn higher_trunk_routes_only_when_server_surface_supports_real_jump(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([3,65,0]),watched_log:None,
@@ -1507,7 +1539,7 @@ mod tests{
     }
     #[test]
     fn gather_wood_approaches_real_lower_trunk_via_verified_descent(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([4,64,0]),watched_log:None,
@@ -1526,7 +1558,7 @@ mod tests{
     }
     #[test]
     fn gather_wood_can_walk_to_downhill_transition_first(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([5,64,0]),watched_log:None,
@@ -1539,7 +1571,7 @@ mod tests{
     }
     #[test]
     fn visible_but_unreachable_wood_triggers_downhill_exploration(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:10,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![[4,65,0]],
@@ -1556,7 +1588,7 @@ mod tests{
     }
     #[test]
     fn matching_height_without_server_ground_contact_is_not_landing(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:8,on_ground:false,position:[1.5,65.0,0.5],
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
@@ -1574,7 +1606,7 @@ mod tests{
     }
     #[test]
     fn isolated_lower_player_can_choose_safe_one_block_uphill_route(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
@@ -1589,7 +1621,7 @@ mod tests{
     }
     #[test]
     fn uphill_exploration_can_use_flat_approach_first(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
@@ -1605,7 +1637,7 @@ mod tests{
         let a=[0,64,0];
         let b=[1,65,0];
         m.observed_landing(a,b,100);
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:101,on_ground:true,position:[1.5,65.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
@@ -1639,7 +1671,7 @@ mod tests{
         let d=[2,65,1];
         memory.observed_landing(a,b,100);
         memory.observed_landing(c,d,120);
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:121,on_ground:true,position:[2.5,65.,1.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
@@ -1657,7 +1689,7 @@ mod tests{
     }
     #[test]
     fn connected_downhill_escape_can_first_walk_across_plateau(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
@@ -1669,7 +1701,7 @@ mod tests{
     }
     #[test]
     fn scavenging_prefers_reachable_real_drops_and_skips_disconnected_items(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.0,0.5],
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
@@ -1690,7 +1722,7 @@ mod tests{
     }
     #[test]
     fn observed_drop_without_safe_pickup_stand_cannot_count_as_collected(){
-        let mut survey=Survey{
+        let mut survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,81.,0.5],
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
@@ -1716,7 +1748,7 @@ mod tests{
     }
     #[test]
     fn known_pickup_stands_prioritize_accessible_drops_over_buried_wood(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,81.,0.5],
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
@@ -1740,7 +1772,7 @@ mod tests{
     }
     #[test]
     fn conservative_cleared_log_route_requires_supported_body_space(){
-        let mut s=Survey{
+        let mut s=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],health:20.,food:20,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,
@@ -1760,7 +1792,7 @@ mod tests{
     }
     #[test]
     fn access_rank_prefers_collectible_then_clearable_then_inaccessible(){
-        let s=Survey{
+        let s=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],health:20.,food:20,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,
@@ -1778,7 +1810,7 @@ mod tests{
     }
     #[test]
     fn preharvest_position_is_reached_before_mining_from_the_edge_of_reach(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([2,64,0]),watched_log:None,logs:vec![[2,64,0]],
@@ -1796,7 +1828,7 @@ mod tests{
     }
     #[test]
     fn disconnected_pickup_stands_do_not_outrank_connected_real_wood(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,
@@ -1814,7 +1846,7 @@ mod tests{
     }
     #[test]
     fn preharvest_pickup_stand_can_use_server_verified_downhill_path(){
-        let survey=Survey{
+        let survey=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,65.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([2,64,0]),watched_log:None,
@@ -1881,7 +1913,7 @@ mod tests{
     }
     #[test]
     fn distant_observed_tree_routes_to_nearest_safe_ground_frontier(){
-        let mut s=Survey{
+        let mut s=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([6,64,0]),watched_log:None,
@@ -1947,7 +1979,7 @@ mod tests{
         assert!(none.is_empty());
     }
     #[test]fn local_route_avoids_unobserved_wall(){
-        let mut s=Survey{
+        let mut s=Survey{ self_id:0,peers:vec![],
             tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([3,64,0]),watched_log:None,logs:vec![[3,64,0]],
