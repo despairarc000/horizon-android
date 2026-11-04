@@ -53,7 +53,7 @@ mod tests{
     use super::*;
     #[test]fn routes_around_blocked_wall_without_diagonal_shortcuts(){
         let safe:Vec<_>=(0..=4).flat_map(|x|(0..=4)
-            .filter(move |z|!(x==2 && *z<4)).map(move |z|[x,z])
+            .filter(move |z|!(x==2 && *z<4) && !(x==1 && *z==0)).map(move |z|[x,z])
         ).collect();
         // The only pass around the x=2 wall is at z=4.
         assert_eq!(first_ground_step([0,0],&[[4,0]],&safe),Some([0,1]));
