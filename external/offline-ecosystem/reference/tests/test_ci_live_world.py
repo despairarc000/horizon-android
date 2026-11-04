@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ci_live_world import (
     check_events, terrain_report, steering_report, server_mining_report,
-    server_destroy_report, item_pickup_report, downhill_report, uphill_report, blocked_pickup_report, harvest_access_report, confirm_observed_exploration,
+    server_destroy_report, item_pickup_report, downhill_report, uphill_report, blocked_pickup_report, harvest_access_report, vertical_cycle_report, confirm_observed_exploration,
 )
 
 def login(name, eid):
@@ -172,6 +172,30 @@ class UphillMotionTests(unittest.TestCase):
         self.assertEqual(counts["rejected_uphill_packets"],1)
         self.assertEqual(counts["invalid_uphill_arcs"],1)
         self.assertEqual(uphill_report(lines[:2])["server_confirmed_uphill_landings"],0)
+
+class VerticalLoopEvidenceTests(unittest.TestCase):
+    def test_repeated_actual_landings_are_not_counted_as_exploration(self):
+        coordinates=([1, 65, 0], [2, 64, 0])
+        events=[
+            f"Offline ecosystem EcoAI0: server-authoritative "
+            f"{'uphill' if i % 2 == 0 else 'downhill'} landing at {coordinates[i % 2]}"
+            for i in range(10)
+        ]
+        report=vertical_cycle_report(events)
+        self.assertEqual(report["EcoAI0"]["server_confirmed_vertical_landings"],10)
+        self.assertEqual(report["EcoAI0"]["longest_two_surface_alternation"],10)
+        self.assertEqual(report["EcoAI1"]["server_confirmed_vertical_landings"],0)
+        self.assertEqual(report["EcoAI1"]["longest_two_surface_alternation"],0)
+
+    def test_nonrepeating_natural_vertical_path_is_allowed(self):
+        events=[
+            f"Offline ecosystem EcoAI1: server-authoritative uphill landing at {[i, 65, 0]}"
+            for i in range(12)
+        ]
+        self.assertEqual(
+            vertical_cycle_report(events)["EcoAI1"]["longest_two_surface_alternation"],0
+        )
+
 
 class BlockedLootRecoveryTests(unittest.TestCase):
     def test_inaccessible_drops_never_count_as_harvests(self):
