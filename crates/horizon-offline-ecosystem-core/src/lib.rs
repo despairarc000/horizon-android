@@ -187,3 +187,4 @@ pub mod population;
 pub mod navigation;
 pub mod harvest;
 pub mod local_path;
+pub mod explore;
