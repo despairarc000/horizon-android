@@ -407,6 +407,25 @@ def harvest_access_report(lines: list[str]) -> dict[str, int]:
     return result
 
 
+WOOD_INVENTORY_GAIN = re.compile(
+    r"Offline ecosystem (EcoAI[01]): correlated log removal "
+    r"and real inventory gain \+(\d+) at \["
+)
+
+
+def wood_inventory_gain_report(lines: list[str]) -> dict[str, int]:
+    """Use exact per-bot *real inventory* deltas after observed removals.
+
+    A mined block, spawned item, or optimistic motion packet cannot meet the
+    natural-world harvesting acceptance gate by itself.
+    """
+    report = {bot: 0 for bot in BOT_NAMES}
+    for line in lines:
+        if match := WOOD_INVENTORY_GAIN.search(line):
+            report[match.group(1)] += int(match.group(2))
+    return report
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -418,7 +437,8 @@ def harvest_report(lines: list[str]) -> dict[str,int]:
 
 def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
         timeout_seconds: float, post_ready_seconds: float = 0,
-        min_bots: int = 0, excursion_blocks: float = 1.0) -> int:
+        min_bots: int = 0, excursion_blocks: float = 1.0,
+        min_wood_gain: int = 0) -> int:
     scratch.mkdir(parents=True, exist_ok=True)
     console = scratch / "console.log"
     command = [
@@ -507,6 +527,12 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Physical drops, sampled geometry and server inventory transfers: {item_pickup_report(lines)}")
     print(f"Inaccessible dropped item recovery (no pickup): {blocked_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
+    inventory_gain=wood_inventory_gain_report(lines)
+    wood_total=sum(inventory_gain.values())
+    wood_ok=wood_total>=min_wood_gain
+    print(f"Real per-bot correlated wood inventory gains: {inventory_gain}; total={wood_total}; required={min_wood_gain}")
+    if not wood_ok:
+        print("ERROR: natural survival wood collection gate not met")
     access=harvest_access_report(lines)
     print(f"Preharvest resource-access classification (not pickup proof): {access}")
     access_ok=access["mined_without_known_access"]==0 and access["unclassified_attempts"]==0
@@ -518,7 +544,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
         lines, min_bots, excursion_blocks
     )
     print(f"Authoritative movement acceptance: {movement_note}")
-    return 0 if reached and held_for_requested_period and movement_ok and access_ok and loop_ok else 1
+    return 0 if reached and held_for_requested_period and movement_ok and access_ok and loop_ok and wood_ok else 1
 
 
 def main() -> int:
@@ -530,6 +556,7 @@ def main() -> int:
     parser.add_argument("--post-ready-seconds", type=float, default=0)
     parser.add_argument("--min-moving-bots", type=int, default=0)
     parser.add_argument("--min-excursion-blocks", type=float, default=1.0)
+    parser.add_argument("--min-wood-gain", type=int, default=0)
     args = parser.parse_args()
     if not args.binary.is_file() or not args.resources.is_dir():
         parser.error("compiled game binary and prepared resources are required")
@@ -543,9 +570,12 @@ def main() -> int:
         parser.error("min-moving-bots must be between 0 and two")
     if not (0 < args.min_excursion_blocks <= 30):
         parser.error("min-excursion-blocks must be between 0 and 30")
+    if not (0 <= args.min_wood_gain <= 64):
+        parser.error("min-wood-gain must be between 0 and 64")
     return run(args.binary, args.resources, args.scratch,
                args.timeout_seconds, args.post_ready_seconds,
-               args.min_moving_bots, args.min_excursion_blocks)
+               args.min_moving_bots, args.min_excursion_blocks,
+               args.min_wood_gain)
 
 
 if __name__ == "__main__":
