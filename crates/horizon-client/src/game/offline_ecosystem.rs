@@ -19,7 +19,7 @@ use ecosystem_core::{
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
     explore::ExplorationMemory,
-    terrain_path::{first_walk_down_step,best_walk_down_frontier,RouteMotion,RouteStep,StepDownController},
+    terrain_path::{first_walk_down_step,first_terrain_step,best_walk_down_frontier,RouteMotion,RouteStep,StepDownController,StepUpController},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -283,6 +283,11 @@ fn terrain_step_to_log(survey:&Survey,log:[i32;3])->Option<RouteStep>{
     if let Some(route)=first_walk_down_step(start,&goals,&survey.terrain){
         return Some(route);
     }
+    // Only when walk/down-only paths cannot reach the real trunk do we
+    // consider a server-verified one-block uphill jump.
+    if let Some(route)=first_terrain_step(start,&goals,&survey.terrain){
+        return Some(route);
+    }
     // If the trunk is beyond this bounded 3D survey, follow a connected
     // frontier on real ground, permitting a detour and one-block descents.
     // All movement still requires independent server collision approval.
@@ -380,6 +385,11 @@ fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
     let goals:Vec<[i32;3]>=survey.terrain.iter().copied()
         .filter(|&p|pickup_goal(p)).collect();
     if let Some(route)=first_walk_down_step(start,&goals,&survey.terrain){
+        return Some(route);
+    }
+    // A verified one-block jump may reach the item when downhill-only
+    // routes cannot. The controller still needs server-confirmed landing.
+    if let Some(route)=first_terrain_step(start,&goals,&survey.terrain){
         return Some(route);
     }
     // Prefer reaching the item's *height* first; a small horizontal
@@ -554,6 +564,8 @@ fn run_local(
     // Only server-authoritative positions can confirm the final landing.
     let mut descent:Option<(StepDownController,u64)>=None;
     let mut descent_cooldown=0u64;
+    let mut ascent:Option<(StepUpController,u64)>=None;
+    let mut ascent_cooldown=0u64;
     let mut last_route_report_tick=None;
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
@@ -664,6 +676,39 @@ fn run_local(
             player.client_tick_end()?;
             continue;
         }
+        if let Some((controller,started))=ascent.as_mut(){
+            let target=controller.destination;
+            let reached=(survey.position[1]-f64::from(target[1])).abs()<0.12
+                && (survey.position[0]-f64::from(target[0])-0.5).abs()<0.65
+                && (survey.position[2]-f64::from(target[2])-0.5).abs()<0.65;
+            if reached {
+                log::info!(
+                    "Offline ecosystem {name}: server-authoritative uphill landing at {target:?}"
+                );
+                ascent=None;
+            } else if survey.tick.saturating_sub(*started)>80 {
+                log::info!(
+                    "Offline ecosystem {name}: uphill motion unconfirmed; backing off from {target:?}"
+                );
+                ascent=None;
+                ascent_cooldown=survey.tick.saturating_add(160);
+            } else {
+                let estimated=player.state.position.unwrap_or(survey.position);
+                if let Some(motion)=controller.next(estimated){
+                    if let Err(error)=player.jump_delta(
+                        motion.dx,motion.dy,motion.dz,motion.on_ground
+                    ){
+                        log::info!(
+                            "Offline ecosystem {name}: uphill packet rejected: {error}"
+                        );
+                        ascent=None;
+                        ascent_cooldown=survey.tick.saturating_add(160);
+                    }
+                }
+                player.client_tick_end()?;
+                continue;
+            }
+        }
         if let Some((controller,started))=descent.as_mut(){
             let target=controller.destination;
             let reached=(survey.position[1]-f64::from(target[1])).abs()<0.12
@@ -767,10 +812,18 @@ fn run_local(
                                 }
                             },
                             RouteMotion::JumpUp=>{
-                                // Defensive: current pickup planning chooses only
-                                // Walk/StepDown routes, never an unimplemented jump.
-                                log::warn!("Offline ecosystem {name}: unexpected jump-only pickup step {:?}",
-                                    route.at);
+                                if survey.tick>=ascent_cooldown {
+                                    if let Some(controller)=StepUpController::begin(
+                                        survey.position,route.at
+                                    ){
+                                        log::info!(
+                                            "Offline ecosystem {name}: attempting normal uphill jump to verified surface {:?}",
+                                            route.at
+                                        );
+                                        ascent=Some((controller,survey.tick));
+                                        descent=None;
+                                    }
+                                }
                             },
                         }
                     }
@@ -821,7 +874,20 @@ fn run_local(
                                         }
                                     }
                                 },
-                                RouteMotion::JumpUp=>{},
+                                RouteMotion::JumpUp=>{
+                                    if survey.tick>=ascent_cooldown {
+                                        if let Some(controller)=StepUpController::begin(
+                                            survey.position,route.at
+                                        ){
+                                            log::info!(
+                                                "Offline ecosystem {name}: approaching real trunk uphill toward verified surface {:?}",
+                                                route.at
+                                            );
+                                            ascent=Some((controller,survey.tick));
+                                            descent=None;
+                                        }
+                                    }
+                                },
                             }
                         } else {
                             // No server-known safe approach. Choose another
@@ -1035,6 +1101,21 @@ mod tests{
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
         survey.terrain=vec![[0,65,0],[2,64,0]];
         assert_eq!(exploratory_downhill_step(&survey),None);
+    }
+    #[test]
+    fn higher_trunk_routes_only_when_server_surface_supports_real_jump(){
+        let mut survey=Survey{
+            tick:0,position:[0.5,64.0,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:Some([3,65,0]),watched_log:None,
+            logs:vec![[3,65,0]],wood_drops:vec![],
+            ground:vec![[0,0]],terrain:vec![[0,64,0],[1,65,0],[2,65,0]],
+        };
+        assert_eq!(terrain_step_to_log(&survey,[3,65,0]),Some(
+            RouteStep{at:[1,65,0],motion:RouteMotion::JumpUp}
+        ));
+        survey.terrain=vec![[0,64,0],[2,65,0]];
+        assert_eq!(terrain_step_to_log(&survey,[3,65,0]),None);
     }
     #[test]
     fn gather_wood_approaches_real_lower_trunk_via_verified_descent(){
