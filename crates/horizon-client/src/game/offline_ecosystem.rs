@@ -380,15 +380,16 @@ fn run_local(
                 let exists=received.watched_log.and_then(|(pos,is_log)|
                     (pos==probe.target).then_some(is_log));
                 let already_removed=probe.block_removed();
-                match probe.observe(received.tick,exists,received.wood_inventory){
-                    HarvestStatus::BlockRemovedWithoutPickup if !already_removed=>{
-                        // One authoritative loaded-block observation per
-                        // target, not an ACK or assumed successful STOP.
-                        log::info!(
-                            "Offline ecosystem {name}: exact server block observation confirmed target no longer log at {:?}",
-                            probe.target
-                        );
-                    },
+                let result=probe.observe(received.tick,exists,received.wood_inventory);
+                if !already_removed && probe.block_removed() {
+                    // One authoritative loaded-block observation per target.
+                    // This also records same-survey drop pickup outcomes.
+                    log::info!(
+                        "Offline ecosystem {name}: exact server block observation confirmed target no longer log at {:?}",
+                        probe.target
+                    );
+                }
+                match result {
                     HarvestStatus::ObservedWoodGain{gained}=>{
                         log::info!(
                             "Offline ecosystem {name}: correlated log removal and real inventory gain +{gained} at {:?}",
