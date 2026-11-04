@@ -288,6 +288,10 @@ fn ground_step_to_drop(survey:&Survey, drop:[f64;3])->Option<[f64;2]>{
 }
 /// Identify actual safe-level changes toward a drop that cannot be collected
 /// from the current feet elevation. These are PLANS, not movement packets.
+/// Return the next SERVER-CONFIRMED standing surface toward an actual
+/// dropped item. If its pickup area is outside this local 7x7x3 window,
+/// approach along connected, safe frontier cells rather than pretending
+/// the distant item is reachable or moving through unobserved blocks.
 fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
     if !drop.iter().all(|x|x.is_finite()){return None;}
     let start=[
@@ -295,14 +299,39 @@ fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
         survey.position[1].floor() as i32,
         survey.position[2].floor() as i32,
     ];
+    let pickup_goal=|p:[i32;3]|{
+        let feet=f64::from(p[1]);
+        drop[1]>feet-0.6 && drop[1]<feet+2.4
+            && (f64::from(p[0])+0.5-drop[0]).abs()<1.5
+            && (f64::from(p[2])+0.5-drop[2]).abs()<1.5
+    };
     let goals:Vec<[i32;3]>=survey.terrain.iter().copied()
-        .filter(|p|{
-            let feet=f64::from(p[1]);
-            drop[1]>feet-0.6 && drop[1]<feet+2.4
-                && (f64::from(p[0])+0.5-drop[0]).abs()<1.5
-                && (f64::from(p[2])+0.5-drop[2]).abs()<1.5
-        }).collect();
-    first_terrain_step(start,&goals,&survey.terrain)
+        .filter(|&p|pickup_goal(p)).collect();
+    if let Some(route)=first_terrain_step(start,&goals,&survey.terrain){
+        return Some(route);
+    }
+    // Optimize distance plus a penalty for item heights outside the
+    // guest's real pickup box, rather than requiring an unreachable exact
+    // destination before taking ANY safe first step.
+    let score=|p:[i32;3]|{
+        let x=f64::from(p[0])+0.5-drop[0];
+        let z=f64::from(p[2])+0.5-drop[2];
+        let feet=f64::from(p[1]);
+        let vertical=if drop[1]<feet-0.6 {
+            feet-0.6-drop[1]
+        }else if drop[1]>feet+2.4{
+            drop[1]-feet-2.4
+        }else{0.0};
+        x*x+z*z+4.0*vertical*vertical
+    };
+    let start_score=score(start);
+    let mut frontiers:Vec<_>=survey.terrain.iter().copied()
+        .filter(|&p|p!=start && score(p)+0.01<start_score).collect();
+    frontiers.sort_by(|a,b|score(*a).total_cmp(&score(*b))
+        .then_with(||a.cmp(b)));
+    frontiers.into_iter().find_map(|goal|
+        first_terrain_step(start,&[goal],&survey.terrain)
+    )
 }
 
 impl ExperimentalBots {
@@ -618,7 +647,14 @@ fn run_local(
                 } else if !same_pickup_height {
                     // A 3D route is not proof the client can descend or
                     // jump. Only execute an actual same-height WALK prefix.
-                    if let Some(route)=terrain_step_to_drop(survey,drop) {
+                    let candidate=terrain_step_to_drop(survey,drop);
+                    if survey.tick%160==0 {
+                        log::info!(
+                            "Offline ecosystem {name}: drop route observed item={drop:?} at={:?} safe_stands={} next={candidate:?}",
+                            survey.position,survey.terrain.len()
+                        );
+                    }
+                    if let Some(route)=candidate {
                         match route.motion {
                             RouteMotion::Walk=>{
                                 let target=[f64::from(route.at[0])+0.5,
@@ -769,6 +805,25 @@ mod tests{
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
         survey.terrain=vec![[0,65,0],[2,64,0]];
         assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),None);
+    }
+    #[test]
+    fn lower_drop_outside_local_pickup_area_uses_verified_3d_frontier(){
+        let mut survey=Survey{
+            tick:0,position:[0.5,65.0,0.5],food:20,health:20.0,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],
+            wood_drops:vec![[5.5,64.15,0.5]],
+            ground:vec![[0,0],[1,0]],
+            terrain:vec![[0,65,0],[1,65,0],[2,64,0]],
+        };
+        assert_eq!(terrain_step_to_drop(&survey,[5.5,64.15,0.5]),
+            Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
+        survey.position=[1.5,65.0,0.5];
+        assert_eq!(terrain_step_to_drop(&survey,[5.5,64.15,0.5]),
+            Some(RouteStep{at:[2,64,0],motion:RouteMotion::StepDown}));
+        survey.position=[0.5,65.0,0.5];
+        survey.terrain=vec![[0,65,0],[3,64,0]];
+        assert_eq!(terrain_step_to_drop(&survey,[5.5,64.15,0.5]),None);
     }
     #[test]fn opt_in_must_be_bounded(){
         assert_eq!(configured_count(None),0);
