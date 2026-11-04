@@ -399,15 +399,16 @@ fn can_approach_log(survey:&Survey,log:[i32;3])->bool{
 /// connected server-verified standing surfaces to a one-block lower level.
 /// No jump-only or unknown transitions are allowed.
 fn exploratory_downhill_step(
-    survey:&Survey,avoid_return:Option<[i32;3]>
+    survey:&Survey,avoid:impl IntoIterator<Item=[i32;3]>
 )->Option<RouteStep>{
     let start=[
         survey.position[0].floor() as i32,
         survey.position[1].floor() as i32,
         survey.position[2].floor() as i32,
     ];
+    let avoid:Vec<_>=avoid.into_iter().collect();
     let safe:Vec<_>=survey.terrain.iter().copied()
-        .filter(|p|Some(*p)!=avoid_return).collect();
+        .filter(|p|*p==start || !avoid.contains(p)).collect();
     let lower:Vec<_>=safe.iter().copied()
         .filter(|p|p[1]<start[1]).collect();
     first_walk_down_step(start,&lower,&safe)
@@ -417,15 +418,16 @@ fn exploratory_downhill_step(
 /// This only chooses collision-checked standing surfaces; all jump packets
 /// still need normal server approval and later authoritative landing.
 fn exploratory_uphill_step(
-    survey:&Survey,avoid_return:Option<[i32;3]>
+    survey:&Survey,avoid:impl IntoIterator<Item=[i32;3]>
 )->Option<RouteStep>{
     let start=[
         survey.position[0].floor() as i32,
         survey.position[1].floor() as i32,
         survey.position[2].floor() as i32,
     ];
+    let avoid:Vec<_>=avoid.into_iter().collect();
     let safe:Vec<_>=survey.terrain.iter().copied()
-        .filter(|p|Some(*p)!=avoid_return).collect();
+        .filter(|p|*p==start || !avoid.contains(p)).collect();
     let higher:Vec<_>=safe.iter().copied()
         .filter(|p|p[1]>start[1]).collect();
     first_terrain_step(start,&higher,&safe)
@@ -1234,15 +1236,24 @@ fn run_local(
                 survey.position[1].floor() as i32,
                 survey.position[2].floor() as i32,
             ];
-            let avoid_return=vertical_memory.avoid_immediate_return(
+            // A single reversed edge is not enough: the real-world bot
+            // repeatedly cycled across a four-surface downhill/uphill loop.
+            // Remember bounded server-confirmed landings, but only for
+            // unguided exploration, never for active resources or pickups.
+            let mut avoid_vertical=vertical_memory.recent_stands_to_avoid(
                 current,survey.tick
             );
+            if let Some(back)=vertical_memory.avoid_immediate_return(
+                current,survey.tick
+            ){
+                if !avoid_vertical.contains(&back){avoid_vertical.push(back);}
+            }
             let downhill=if seek_vertical && survey.tick>=descent_cooldown {
-                exploratory_downhill_step(survey,avoid_return)
+                exploratory_downhill_step(survey,avoid_vertical.clone())
             } else {None};
             let vertical=downhill.or_else(||{
                 if seek_vertical && survey.tick>=ascent_cooldown {
-                    exploratory_uphill_step(survey,avoid_return)
+                    exploratory_uphill_step(survey,avoid_vertical)
                 } else {None}
             });
             if let Some(route)=vertical {
@@ -1532,6 +1543,31 @@ mod tests{
         assert_eq!(exploratory_downhill_step(&survey,
             m.avoid_immediate_return(b,220)),
             Some(RouteStep{at:a,motion:RouteMotion::StepDown}));
+    }
+    #[test]
+    fn repeated_vertical_landings_cannot_trap_explorer_in_short_loop(){
+        let mut memory=VerticalTransitionMemory::new();
+        let a=[0,65,0];
+        let b=[1,64,0];
+        let c=[1,64,1];
+        let d=[2,65,1];
+        memory.observed_landing(a,b,100);
+        memory.observed_landing(c,d,120);
+        let survey=Survey{
+            tick:121,on_ground:true,position:[2.5,65.,1.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
+            ground:vec![[2,1]],clearable_stands:vec![],
+            terrain:vec![a,b,c,d],
+        };
+        // Without history, this is an immediate new downhill attempt toward
+        // a recently traversed surface. With bounded history it refuses.
+        assert!(exploratory_downhill_step(&survey,None).is_some());
+        assert_eq!(exploratory_downhill_step(&survey,
+            memory.recent_stands_to_avoid(d,121)),None);
+        // All routes become available again after the short memory expires.
+        assert!(exploratory_downhill_step(&survey,
+            memory.recent_stands_to_avoid(d,601)).is_some());
     }
     #[test]
     fn connected_downhill_escape_can_first_walk_across_plateau(){
