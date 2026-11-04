@@ -14,6 +14,7 @@ use std::{
 };
 use ecosystem_core::{
     BotView, Intent, LocalObservation, Needs, Personality, choose_intent,
+    navigation::TargetMemory,
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -226,6 +227,9 @@ fn run_local(
     let mut waypoint=0usize;
     let mut next_tick=Instant::now();
     let mut last_survey=None;
+    // Last-known resource locations and failed-approach history belong to
+    // this individual, not a world-wide omniscient shared list.
+    let mut target_memory=TargetMemory::new();
     // The server enforces reach, progress and drops. The bot only records
     // attempted transactions; no resources are credited speculatively.
     let mut mining:Option<([i32;3],u64)>=None;
@@ -236,9 +240,19 @@ fn run_local(
     const OFFSETS:[[f64;2];4]=[[0.8,0.0],[0.8,0.8],[0.0,0.8],[0.0,0.0]];
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
-        for received in rx.try_iter(){
-            // This is the server-authoritative position and health; use it
-            // to correct optimistic positions after collision/rejection.
+        for mut received in rx.try_iter(){
+            // Only consider logs on approximately the same level while
+            // vertical navigation and obstacle handling remain unavailable.
+            // This also prevents getting stuck forever targeting tall trees.
+            let walkable_height:Vec<[i32;3]>=received.logs.iter().copied()
+                .filter(|p|(received.position[1]-f64::from(p[1])).abs()<1.5)
+                .collect();
+            // Only real, server-observed positions count as movement progress.
+            // A remembered target can be investigated, but not treated as
+            // confirmed still-existing or credited with any item rewards.
+            received.nearby_log=target_memory.observe(
+                received.tick,received.position,&walkable_height
+            );
             player.state.position=Some(received.position);
             last_survey=Some((received,Instant::now()));
         }
@@ -283,7 +297,13 @@ fn run_local(
                             log_center[0]+dx/distance*2.0,
                             log_center[1]+dz/distance*2.0,
                         ];
-                        let _=player.steer_xz(target);
+                        if matches!(player.steer_xz(target),Ok(false)){
+                            target_memory.attempted_step(log);
+                        }
+                    } else if !survey.logs.contains(&log) {
+                        // Last-known location only: investigate, never mine
+                        // an unobserved or already-removed block.
+                        exploring=true;
                     } else if mining.is_none() && survey.tick>=mine_cooldown{
                         let used=attempts.filter(|(p,_)|*p==log).map_or(0,|(_,n)|n);
                         if used<2{
@@ -292,6 +312,9 @@ fn run_local(
                             attempts=Some((log,used+1));
                             mining=Some((log,survey.tick));
                         } else {
+                            // Tried twice without a confirmed block removal.
+                            // Consider a different observed log for a while.
+                            target_memory.avoid(log,survey.tick);
                             exploring=true;
                         }
                     }

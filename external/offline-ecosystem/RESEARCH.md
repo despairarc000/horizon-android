@@ -49,3 +49,9 @@ No crafting, item pickup confirmation, vertical navigation or obstacle-aware pat
 ## Server inventory and actual food use
 
 The opt-in survey now includes server-authoritative counts from the 36-slot inventory, distinguishing usable edible **hotbar** items from inaccessible main-inventory food, and counts actual log/stem/plank stacks. `ecosystem_core::choose_intent` consumes these counts. For hunger, the headless player can now send normal selected-hotbar and item-use packets with a 40-server-tick retry cooldown; Horizon handles and verifies any consumption. No resource is fabricated, and no inventory change is assumed before a later server survey. Moving food from the main inventory into the hotbar and actual shelter construction remain unimplemented.
+
+## Research application: individual last-known targets and stuck recovery
+
+Based on Rain World devlogs about target pursuit and bounded abstract knowledge (not a code port), `horizon-offline-ecosystem-core/src/navigation.rs` now maintains per-bot last-seen resource targets, TTL-based avoidance, and a StuckTracker-style detector. The detector counts **only** genuine server-observed movement failures after actual movement requests, then temporarily avoids the blocked target and selects another. Known targets have finite lifetime, disappear on negative local evidence, and never spawn or credit resources. The real-game worker filters logs with excessive height difference and won't mine a remembered-but-not-currently-observed block.
+
+This is still a local steering prototype: no full voxel pathfinder, line-of-sight occlusion, jumping, or persisted individual memory yet. Unit tests cover stalled motion, real progress, bounded avoidance, last-seen expiration, duplicate survey rejection, and negative evidence.
