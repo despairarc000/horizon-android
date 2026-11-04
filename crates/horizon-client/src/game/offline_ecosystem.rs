@@ -262,6 +262,41 @@ fn ground_step_to_log(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
     })?;
     Some([f64::from(first[0])+0.5,f64::from(first[1])+0.5])
 }
+/// A connected, physically executable local route to a real observed
+/// trunk. A target above the player's mining reach is never silently
+/// upgraded into a jump, flight or fabricated resource.
+fn terrain_step_to_log(survey:&Survey,log:[i32;3])->Option<RouteStep>{
+    let start=[
+        survey.position[0].floor() as i32,
+        survey.position[1].floor() as i32,
+        survey.position[2].floor() as i32,
+    ];
+    let mineable=|p:[i32;3]|{
+        let vertical=f64::from(log[1])-f64::from(p[1]);
+        let dx=f64::from(p[0])-f64::from(log[0]);
+        let dz=f64::from(p[2])-f64::from(log[2]);
+        (-1.5..=2.5).contains(&vertical)
+            && dx*dx+dz*dz <= 2.3f64.powi(2)
+    };
+    let goals:Vec<_>=survey.terrain.iter().copied()
+        .filter(|&p|mineable(p)).collect();
+    if let Some(route)=first_walk_down_step(start,&goals,&survey.terrain){
+        return Some(route);
+    }
+    // If the trunk is beyond this bounded 3D survey, follow a connected
+    // frontier on real ground, permitting a detour and one-block descents.
+    // All movement still requires independent server collision approval.
+    best_walk_down_frontier(start,&survey.terrain,|p|{
+        let dx=f64::from(p[0])-f64::from(log[0]);
+        let dz=f64::from(p[2])-f64::from(log[2]);
+        let vertical=f64::from(log[1])-f64::from(p[1]);
+        let outside=if vertical < -1.5 {-1.5-vertical}
+            else if vertical>2.5 {vertical-2.5}
+            else {0.0};
+        dx*dx+dz*dz+16.0*outside*outside
+    })
+}
+
 /// Prefer observed wood that can actually be approached from the
 /// bot's current server-known ground. Otherwise the first visible tree can
 /// monopolize every decision even when it is behind a cliff or solid wall.
@@ -277,6 +312,7 @@ fn can_approach_log(survey:&Survey,log:[i32;3])->bool{
     let dx=survey.position[0]-f64::from(log[0])-0.5;
     let dz=survey.position[2]-f64::from(log[2])-0.5;
     dx.hypot(dz)<=2.3 || ground_step_to_log(survey,log).is_some()
+        || terrain_step_to_log(survey,log).is_some()
 }
 
 /// When ordinary exploration is trapped on a tiny plateau, follow only
@@ -759,9 +795,37 @@ fn run_local(
                             if steering.steer(&mut player,waypoint){
                                 target_memory.attempted_step(log);
                             }
+                        } else if let Some(route)=terrain_step_to_log(survey,log){
+                            match route.motion {
+                                RouteMotion::Walk=>{
+                                    let target=[
+                                        f64::from(route.at[0])+0.5,
+                                        f64::from(route.at[2])+0.5,
+                                    ];
+                                    if steering.steer(&mut player,target){
+                                        target_memory.attempted_step(log);
+                                    }
+                                },
+                                RouteMotion::StepDown=>{
+                                    if survey.tick>=descent_cooldown{
+                                        if let Some(controller)=
+                                            StepDownController::begin(
+                                                survey.position,route.at
+                                            )
+                                        {
+                                            log::info!(
+                                                "Offline ecosystem {name}: approaching real trunk downhill toward verified surface {:?}",
+                                                route.at
+                                            );
+                                            descent=Some((controller,survey.tick));
+                                        }
+                                    }
+                                },
+                                RouteMotion::JumpUp=>{},
+                            }
                         } else {
-                            // Unknown or unsafe cells are never traversed.
-                            // This is still only level-ground navigation.
+                            // No server-known safe approach. Choose another
+                            // observed resource or explore verified terrain.
                             exploring=true;
                         }
                     } else if !survey.logs.contains(&log) {
@@ -971,6 +1035,38 @@ mod tests{
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
         survey.terrain=vec![[0,65,0],[2,64,0]];
         assert_eq!(exploratory_downhill_step(&survey),None);
+    }
+    #[test]
+    fn gather_wood_approaches_real_lower_trunk_via_verified_descent(){
+        let mut survey=Survey{
+            tick:0,position:[0.5,65.0,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:Some([4,64,0]),watched_log:None,
+            logs:vec![[4,64,0]],wood_drops:vec![],
+            ground:vec![[0,0]],
+            terrain:vec![[0,65,0],[1,64,0],[2,64,0],[3,64,0]],
+        };
+        assert_eq!(ground_step_to_log(&survey,[4,64,0]),None);
+        assert_eq!(terrain_step_to_log(&survey,[4,64,0]),
+            Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
+        assert!(can_approach_log(&survey,[4,64,0]));
+        // A disconnected lower log never becomes a teleport destination.
+        survey.terrain=vec![[0,65,0],[3,64,0]];
+        assert_eq!(terrain_step_to_log(&survey,[4,64,0]),None);
+        assert!(!can_approach_log(&survey,[4,64,0]));
+    }
+    #[test]
+    fn gather_wood_can_walk_to_downhill_transition_first(){
+        let survey=Survey{
+            tick:0,position:[0.5,65.0,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:Some([5,64,0]),watched_log:None,
+            logs:vec![[5,64,0]],wood_drops:vec![],
+            ground:vec![[0,0],[1,0]],
+            terrain:vec![[0,65,0],[1,65,0],[2,64,0],[3,64,0]],
+        };
+        assert_eq!(terrain_step_to_log(&survey,[5,64,0]),
+            Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
     }
     #[test]
     fn visible_but_unreachable_wood_triggers_downhill_exploration(){
