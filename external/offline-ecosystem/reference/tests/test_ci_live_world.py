@@ -136,12 +136,15 @@ class UphillMotionTests(unittest.TestCase):
             "Offline ecosystem EcoAI0: server-authoritative uphill landing at [1, 65, 0]",
             "Offline ecosystem EcoAI1: uphill motion unconfirmed; backing off from [2, 65, 0]",
             "Offline ecosystem EcoAI1: uphill packet rejected: jump destination chunk unavailable",
+            "Offline ecosystem EcoAI0: exploring uphill toward verified surface [3, 65, 0]",
+            "Offline ecosystem EcoAI1: uphill arc invalid before verified landing at [2, 65, 0]",
         ]
         counts=uphill_report(lines)
-        self.assertEqual(counts["uphill_attempts"],2)
+        self.assertEqual(counts["uphill_attempts"],3)
         self.assertEqual(counts["server_confirmed_uphill_landings"],1)
         self.assertEqual(counts["unconfirmed_uphill_timeouts"],1)
         self.assertEqual(counts["rejected_uphill_packets"],1)
+        self.assertEqual(counts["invalid_uphill_arcs"],1)
         self.assertEqual(uphill_report(lines[:2])["server_confirmed_uphill_landings"],0)
 
 class TerrainProbeTests(unittest.TestCase):
