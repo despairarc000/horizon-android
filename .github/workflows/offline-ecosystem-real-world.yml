@@ -38,6 +38,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Verify locked Rust dependencies
         run: cargo metadata --locked --format-version 1 --no-deps >/dev/null
+      - name: Restore Horizon-pinned 26.3 metadata
+        run: |
+          set -euo pipefail
+          mkdir -p .local/minecraft/26.3
+          curl -fL --retry 3 --retry-delay 2             https://piston-meta.mojang.com/v1/packages/11f1aefe473eefba0af62e3286c33b692807b2eb/26.3.json             -o .local/minecraft/26.3/manifest.json
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          metadata=Path('.local/minecraft/26.3/manifest.json').read_bytes()
+          actual=hashlib.sha1(metadata).hexdigest()
+          expected='11f1aefe473eefba0af62e3286c33b692807b2eb'
+          assert actual == expected, f'pinned manifest unexpectedly changed: {actual}'
+          PY
       - name: Prepare private Minecraft resources from official pinned downloads
         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
       - name: Run real Horizon LAN world integration with an offline bot
