@@ -1478,6 +1478,12 @@ fn offline_ecosystem_player_joins_real_horizon_hub_through_memory(){
         Ok((spawn,move_to,player.state.last_block_update))
     });
     assert!((outcome.1[0]-outcome.0[0]-0.2).abs()<0.001);
+    let guest=server.hub.guests.iter().find(|g|g.name=="Ecosystem0")
+        .expect("real Hub must still own the local player");
+    assert!(guest.placed && guest.loaded,
+        "Horizon did not complete the real player lifecycle");
+    assert!((guest.position[0]-outcome.1[0]).abs()<0.02,
+        "movement must be accepted by the authoritative Hub, not just predicted locally");
     assert!(server.placed.iter().any(|entry|entry.3==818),
         "the real hub did not deliver the local player's block action");
     // The LAN fixture places blocks to test event dispatch; this assertion
