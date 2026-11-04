@@ -42,7 +42,7 @@ struct Survey {
     /// Loaded, approximately level ground tiles with full support and
     /// two-block clearance. Never an omniscient traversability map.
     ground: Vec<[i32;2]>,
-    /// Server-verified 7x7x3 standing surfaces, for safe route planning.
+    /// Up to 363 server-verified 11x11x3 standing surfaces for routing.
     terrain: Vec<[i32;3]>,
     /// At most 32 nearby real server blocks within a 13x13 search.
     /// Only loaded cells; not yet an occlusion-aware view.
