@@ -99,6 +99,30 @@ def terrain_report(lines: list[str]) -> dict[str,dict[str,int|float|bool]]:
     return result
 
 
+STEERING_SAMPLE = re.compile(
+    r"Offline ecosystem (EcoAI[01]): steering packets_sent=(\\d+) "
+    r"waypoints_reached=(\\d+) rejected=(\\d+) last_error=(.*)"
+)
+
+
+def steering_report(lines: list[str]) -> dict[str, dict[str,int|str|bool]]:
+    # Packet counts are diagnostics, NOT acknowledged movement.
+    latest: dict[str,dict[str,int|str|bool]] = {
+        name: {"reported": False} for name in BOT_NAMES
+    }
+    for line in lines:
+        if match := STEERING_SAMPLE.search(line):
+            name,sent,reached,rejected,error=match.groups()
+            latest[name]={
+                "reported": True,
+                "packets_sent": int(sent),
+                "waypoints_reached": int(reached),
+                "rejected": int(rejected),
+                "last_error": error.strip(),
+            }
+    return latest
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -185,6 +209,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Headless integrated-world acceptance: {explanation}")
     print(f"Observed {len(lines)} console lines in {time.monotonic()-started:.1f}s")
     print(f"Terrain elevation and authoritative movement: {terrain_report(lines)}")
+    print(f"Bot steering transport diagnostics (not confirmed motion): {steering_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
