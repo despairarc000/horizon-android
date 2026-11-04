@@ -19,7 +19,7 @@ use ecosystem_core::{
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
     explore::ExplorationMemory,
-    terrain_path::{first_walk_down_step,RouteMotion,RouteStep,StepDownController},
+    terrain_path::{first_walk_down_step,best_walk_down_frontier,RouteMotion,RouteStep,StepDownController},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -315,28 +315,22 @@ fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
     if let Some(route)=first_walk_down_step(start,&goals,&survey.terrain){
         return Some(route);
     }
-    // Optimize distance plus a penalty for item heights outside the
-    // guest's real pickup box, rather than requiring an unreachable exact
-    // destination before taking ANY safe first step.
-    let score=|p:[i32;3]|{
+    // Prefer reaching the item's *height* first; a small horizontal
+    // shortcut on the high ledge cannot pick up a drop on lower ground.
+    // One bounded BFS finds the best reachable frontier without repeated
+    // graph searches. It may first walk AWAY from the item to go around
+    // a physical wall, but never invents a jump or unexplored cell.
+    best_walk_down_frontier(start,&survey.terrain,|p|{
         let x=f64::from(p[0])+0.5-drop[0];
         let z=f64::from(p[2])+0.5-drop[2];
         let feet=f64::from(p[1]);
-        let vertical=if drop[1]<feet-0.6 {
+        let vertical=if drop[1]<feet-0.6{
             feet-0.6-drop[1]
         }else if drop[1]>feet+2.4{
             drop[1]-feet-2.4
         }else{0.0};
-        x*x+z*z+4.0*vertical*vertical
-    };
-    let start_score=score(start);
-    let mut frontiers:Vec<_>=survey.terrain.iter().copied()
-        .filter(|&p|p!=start && score(p)+0.01<start_score).collect();
-    frontiers.sort_by(|a,b|score(*a).total_cmp(&score(*b))
-        .then_with(||a.cmp(b)));
-    frontiers.into_iter().find_map(|goal|
-        first_walk_down_step(start,&[goal],&survey.terrain)
-    )
+        x*x+z*z+256.0*vertical*vertical
+    })
 }
 
 impl ExperimentalBots {
@@ -654,9 +648,26 @@ fn run_local(
                     // jump. Only execute an actual same-height WALK prefix.
                     let candidate=terrain_step_to_drop(survey,drop);
                     if survey.tick%160==0 {
+                        let origin=[
+                            survey.position[0].floor() as i32,
+                            survey.position[1].floor() as i32,
+                            survey.position[2].floor() as i32,
+                        ];
+                        let nearby_lower=survey.terrain.iter().filter(|p|
+                            p[1]==origin[1]-1
+                            && (i64::from(p[0])-i64::from(origin[0])).abs()
+                              +(i64::from(p[2])-i64::from(origin[2])).abs()==1
+                        ).count();
+                        let pickup_stands=survey.terrain.iter().filter(|p|{
+                            let feet=f64::from(p[1]);
+                            drop[1]>feet-0.6 && drop[1]<feet+2.4
+                                && (f64::from(p[0])+0.5-drop[0]).abs()<1.5
+                                && (f64::from(p[2])+0.5-drop[2]).abs()<1.5
+                        }).count();
                         log::info!(
-                            "Offline ecosystem {name}: drop route observed item={drop:?} at={:?} safe_stands={} next={candidate:?}",
-                            survey.position,survey.terrain.len()
+                            "Offline ecosystem {name}: drop route observed item={drop:?} at={:?} safe_stands={} pickup_stands={} adjacent_lower={} next={candidate:?}",
+                            survey.position,survey.terrain.len(),
+                            pickup_stands,nearby_lower
                         );
                     }
                     if let Some(route)=candidate {
@@ -808,6 +819,21 @@ mod tests{
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
         survey.terrain=vec![[0,65,0],[2,64,0]];
         assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),None);
+    }
+    #[test]
+    fn lower_drop_detours_around_solid_high_ground_without_jumping(){
+        let safe=vec![
+            [0,65,0],[0,65,1],[0,65,2],[1,65,2],
+            [2,65,2],[2,64,1],[2,64,0],
+        ];
+        let survey=Survey{
+            tick:0,position:[0.5,65.0,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
+            ground:vec![[0,0],[0,1],[0,2],[1,2],[2,2]],terrain:safe,
+        };
+        assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),
+            Some(RouteStep{at:[0,65,1],motion:RouteMotion::Walk}));
     }
     #[test]
     fn lower_drop_outside_local_pickup_area_uses_verified_3d_frontier(){
