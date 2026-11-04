@@ -55,41 +55,16 @@ jobs:
         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
       - name: Assert server-authoritative movement and real block action
         run: cargo test -p horizon-client --locked --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
-      - name: Run headless integrated world with two opt-in offline bots
-        env:
-          HORIZON_ECOSYSTEM_EXPERIMENTAL_BOTS: '2'
+      - name: Build test game binary
+        run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
+      - name: Exercise two real loaded bot players (event-based acceptance)
         run: |
-          set -euo pipefail
-          mkdir -p .local/ecosystem-headless
-          timeout 230s cargo run --locked --no-default-features -p horizon-client --bin horizon-client -- \
-            --resources "$PWD/.local/horizon-client/26.3" \
-            --headless --world EcoWorld --seed 42 \
-            --frames 900 --timeout-seconds 120 \
-            --render-distance 2 --name EcoHost --no-pause \
-            --game-dir "$PWD/.local/ecosystem-headless" \
-            --home "$PWD/.local/ecosystem-headless" \
-            --smoke-report "$PWD/.local/ecosystem-headless/report.json" \
-            2>&1 | tee "$PWD/.local/ecosystem-headless/console.log"
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          root=Path('.local/ecosystem-headless')
-          report=json.loads((root/'report.json').read_text())
-          print('Headless world smoke:',report)
-          assert report.get('error') is None, report
-          assert report.get('player') is not None, 'No real integrated-server player spawned'
-          assert report.get('chunks',0)>0, 'No real world chunks loaded'
-          logs='\n'.join(p.read_text(errors='replace') for p in root.rglob('*.log'))
-          assert 'Offline ecosystem: started 2 opt-in local bots' in logs, (
-              'Offline ecosystem worker initialization not observed in game log')
-          assert 'not_whitelisted' not in logs, 'private world rejected local bots'
-          for bot in ['EcoAI0','EcoAI1']:
-              assert any(bot in line and 'logged in' in line for line in logs.splitlines()), (
-                  f'{bot} did not enter the actual integrated server')
-              assert f'Offline ecosystem {bot}: first authoritative survey' in logs, (
-                  f'{bot} did not receive a loaded-world server observation')
-          print('Two actual integrated-server bots received authoritative world surveys')
-          PY
+          python3 -m unittest discover -s external/offline-ecosystem/reference/tests -p test_ci_live_world.py -v
+          python3 external/offline-ecosystem/ci_live_world.py \
+            --binary target/debug/horizon-client \
+            --resources .local/horizon-client/26.3 \
+            --scratch .local/ecosystem-headless \
+            --timeout-seconds 140
       - name: Check resource boundary
         if: always()
         run: |
