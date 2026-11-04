@@ -60,6 +60,8 @@ jobs:
       - name: Build test game binary
         run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
       # Compare server-observed movement after stalled-step quarantine.
+      # Navigate toward bounded, server-sensed dropped item coordinates,
+      # not the guessed mined block center; preserve normal pickup rules.
       # Prefer collectable-height logs and quantify genuine item drops,
       # player-distance constraints and inventory accounting.
       # Probe the longer, bounded 400-tick harvest window and ensure
