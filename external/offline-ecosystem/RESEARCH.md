@@ -66,7 +66,7 @@ The same run timed out because `--world-frames` only advances while the graphica
 
 Mining requests now have a per-bot watched target: the server performs a **direct block lookup** for the exact active mining coordinate, returning `None` for an unloaded or unobserved block rather than pretending it disappeared. A bounded evidence record distinguishes a mining packet, confirmed disappearance, and a **real increase** in that guest's own wood inventory. The bot moves toward the removed block to attempt ordinary item pickup, because Horizon only picks up nearby dropped entities. A correlated result is logged as such; it does not fabricate inventory or prove causality if another entity broke the same block.
 
-This is still preliminary: the bot needs line-of-sight, 3D navigation and an actual successful inventory gain observed in a resource-backed test. The tracker expires after 200 server ticks without confirmation.
+This is still preliminary: the bot needs line-of-sight, 3D navigation and an actual successful inventory gain observed in a resource-backed test. The tracker now expires after 400 server ticks without confirmation; this is a bounded follow-up to observed server-delayed breaks that could occur after the former 200-tick timeout.
 
 ## Bounded obstacle-aware ground routing
 
@@ -79,3 +79,14 @@ Previous 40-second in-game testing confirmed zero mining attempts despite both b
 ## 3D local standing-surface diagnosis (2026-11-04)
 
 The natural-world seed 42 run (commit dd236520) accepted both bots and their server surveys, but both remained at their initial spawn positions for the full observation period: each survey reported only 2 or 3 same-height traversable ground cells and zero logs. The root cause has not yet been proven. The server now probes the same 7x7 region across y-1, y and y+1; its logs report validated lower/higher standing cells and whether each bot's current column is accepted as supported ground. Unknown chunks remain blocked, and the worker is **not yet allowed to execute vertical jumps or drops**. Rust core adds a six-test conservative 3D route planner that distinguishes walking, one-block descent and jump-up, preserving server collision authority.
+
+## Real survival block destruction confirmed (2026-11-04)
+
+[Resource-backed CI run #41761961158](https://github.com/despairarc000/horizon-android/actions/runs/41761961158) joined two opt-in headless survival players. Each made measurable server-observed progress (20.13 and 24.32 blocks of sampled path). The server recorded eight mining STARTs, eight STOPs (six `Break`, two `Delay`) and **eight actual `guest_destroy` calls that returned OK and changed the watched block to air**. Thus *real server mutation is demonstrated*, not merely a successful packet exchange. However the bot-side correlation reported **zero recorded exact removals and zero inventory gains**, so harvesting remains incomplete. The source of the discrepancy was not fully isolated by this run.
+
+Two observed evidence risks motivated focused fixes:
+
+- `run_local` previously resumed exploring as soon as it sent STOP, even though `HarvestEvidence` could only observe exact blocks within a locally loaded survey window; the bot now stays near the original target while awaiting removal or a bounded timeout.
+- The 200-tick evidence window was too short for some delayed server mining. The window is now 400 ticks (not infinite) and Rust tests cover late removal and subsequent inventory gain. A new one-time bot-side removal log fires on actual `None→Some` removal evidence, including when inventory gain happens during that same survey, instead of only while the bot still has an active mining START.
+
+The next resource-backed run must distinguish **server block mutation**, **bot-side exact block observation**, **physical item collection**, and **personal inventory gain**. None of these can be inferred from another. Keep natural world rules and prevent artificial items or creative privileges in acceptance fixtures.
