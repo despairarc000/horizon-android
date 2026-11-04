@@ -79,6 +79,63 @@ fn route_step(
     None
 }
 
+/// In one bounded flood fill, find the best EXECUTABLE reachable frontier
+/// with a meaningful score improvement over the current standing cell.
+/// The chosen first step can initially move AWAY from the goal, allowing
+/// detours. Unknown cells and upward jump edges remain forbidden.
+/// This is local path planning, not authoritative physical movement.
+pub fn best_walk_down_frontier<F>(
+    start:[i32;3], confirmed_stands:&[[i32;3]],
+    score:F
+)->Option<RouteStep>
+where F:Fn([i32;3])->f64 {
+    if confirmed_stands.is_empty() || confirmed_stands.len()>MAX_KNOWN_STANDS {
+        return None;
+    }
+    let safe:BTreeSet<_>=confirmed_stands.iter().copied().collect();
+    if !safe.contains(&start){return None;}
+    let starting_score=score(start);
+    if !starting_score.is_finite(){return None;}
+    let mut queue=VecDeque::from([start]);
+    // First executable step and the complete walk/down route length.
+    let mut seen=BTreeMap::from([(start,(RouteStep{
+        at:start,motion:RouteMotion::Walk,
+    },0usize))]);
+    let mut best:Option<(f64,usize,[i32;3],RouteStep)>=None;
+    while let Some(p)=queue.pop_front(){
+        let (first,depth)=seen[&p];
+        if p!=start {
+            let value=score(p);
+            if value.is_finite() && value+0.01<starting_score {
+                let candidate=(value,depth,p,first);
+                if best.as_ref().is_none_or(|old|
+                    value.total_cmp(&old.0).then_with(||depth.cmp(&old.1))
+                        .then_with(||p.cmp(&old.2)).is_lt()
+                ){
+                    best=Some(candidate);
+                }
+            }
+        }
+        for (dx,dz) in [(0,-1),(1,0),(0,1),(-1,0)] {
+            let (Some(x),Some(z))=(p[0].checked_add(dx),p[2].checked_add(dz))
+                else {continue;};
+            for dy in [0,-1] {
+                let Some(y)=p[1].checked_add(dy) else {continue;};
+                let q=[x,y,z];
+                if !safe.contains(&q) || seen.contains_key(&q){continue;}
+                let route=if p==start {
+                    RouteStep{at:q,motion:if dy<0{
+                        RouteMotion::StepDown
+                    } else {RouteMotion::Walk}}
+                } else {first};
+                seen.insert(q,(route,depth+1));
+                queue.push_back(q);
+            }
+        }
+    }
+    best.map(|(_,_,_,first)|first)
+}
+
 /// One conservative player motion packet requested by a one-block descent.
 /// These are local *requests*; only a later server survey proves movement.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -254,6 +311,29 @@ mod tests{
         assert_eq!(first_walk_down_step([0,65,0],&[[2,66,0]],&impossible),None);
         assert_eq!(first_terrain_step([0,65,0],&[[2,66,0]],&impossible),
             Some(RouteStep{at:[1,66,0],motion:RouteMotion::JumpUp}));
+    }
+    #[test]
+    fn one_pass_frontier_search_uses_a_genuine_detour(){
+        let stands=[
+            [0,65,0],[0,65,1],[0,65,2],
+            [1,65,2],[2,65,2],[2,64,1],[2,64,0],
+        ];
+        let score=|p:[i32;3]|{
+            let dx=f64::from(2-p[0]);
+            let dz=f64::from(0-p[2]);
+            dx*dx+dz*dz+256.0*f64::from(p[1]-64).powi(2)
+        };
+        assert_eq!(best_walk_down_frontier([0,65,0],&stands,score),
+            Some(RouteStep{at:[0,65,1],motion:RouteMotion::Walk}));
+        // A disconnected lower cell never becomes an invented path.
+        let disconnected=[[0,65,0],[2,64,0]];
+        assert_eq!(best_walk_down_frontier([0,65,0],&disconnected,score),None);
+    }
+    #[test]
+    fn one_pass_frontier_never_uses_unimplemented_jump(){
+        let stands=[[0,65,0],[1,66,0],[2,66,0]];
+        let score=|p:[i32;3]|f64::from(2-p[0]).powi(2);
+        assert_eq!(best_walk_down_frontier([0,65,0],&stands,score),None);
     }
     #[test]
     fn expanded_bounded_survey_is_supported(){
