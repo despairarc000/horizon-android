@@ -242,6 +242,27 @@ fn prefer_pickup_height(logs:&mut [[i32;3]], feet:[f64;3]){
     });
 }
 
+/// Rank only the REAL currently observed standing cells against a
+/// conservative post-break dropped-item height. This is a resource
+/// *selection heuristic*, not evidence that any item spawned or was picked
+/// up. Logs whose drops could fall below every valid pickup box are lower
+/// priority, even if the mining action itself would be in reach.
+fn predicted_pickup_stands(survey:&Survey, log:[i32;3])->usize{
+    survey.terrain.iter().filter(|stand|{
+        let dx=(i64::from(stand[0])-i64::from(log[0])).abs();
+        let dz=(i64::from(stand[2])-i64::from(log[2])).abs();
+        let feet=f64::from(stand[1]);
+        let low_drop=f64::from(log[1]);
+        dx<=1 && dz<=1
+            && low_drop>feet-0.6 && low_drop<feet+2.4
+    }).count()
+}
+fn prioritize_collectible_logs(logs:&mut [[i32;3]], survey:&Survey){
+    // Preserve the existing nearest/high-ground ordering among equal
+    // predictions. Sorting is stable; avoid generating synthetic targets.
+    logs.sort_by_key(|log|predicted_pickup_stands(survey,*log)==0);
+}
+
 /// The next ground tile on a real obstacle-aware, local route to a log.
 /// No jump/swim/drop ability is inferred when the local grid has no route.
 fn ground_step_to_log(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
@@ -655,6 +676,7 @@ fn run_local(
                 .collect();
             prefer_pickup_height(&mut walkable_height,received.position);
             walkable_height.retain(|&log|can_approach_log(&received,log));
+            prioritize_collectible_logs(&mut walkable_height,&received);
             // Only real, server-observed positions count as movement progress.
             // A remembered target can be investigated, but not treated as
             // confirmed still-existing or credited with any item rewards.
@@ -1317,6 +1339,30 @@ mod tests{
         };
         assert_eq!(exploratory_downhill_step(&survey,None),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
+    }
+    #[test]
+    fn known_pickup_stands_prioritize_accessible_drops_over_buried_wood(){
+        let survey=Survey{
+            tick:0,on_ground:true,position:[0.5,81.,0.5],
+            food:20,health:20.,food_inventory:0,wood_inventory:0,
+            hotbar_food_slot:None,nearby_log:None,watched_log:None,
+            ground:vec![[0,0]],logs:vec![[1,80,0],[2,81,0]],
+            terrain:vec![[0,81,0],[1,81,1]],wood_drops:vec![],
+        };
+        // Below-feet logs can be mined, but a settled drop at Y=80 is
+        // lower than the pickup box of both current standing surfaces.
+        assert_eq!(predicted_pickup_stands(&survey,[1,80,0]),0);
+        assert!(predicted_pickup_stands(&survey,[2,81,0])>0);
+        let mut candidates=vec![[1,80,0],[2,81,0]];
+        prioritize_collectible_logs(&mut candidates,&survey);
+        assert_eq!(candidates[0],[2,81,0]);
+        // No observed pickup cells? Keep real resources as fallback, not
+        // fabricated stand positions or invisible inventory credits.
+        let mut no_support=survey.clone();
+        no_support.terrain=vec![[0,83,0]];
+        let mut candidates=vec![[1,80,0],[2,81,0]];
+        prioritize_collectible_logs(&mut candidates,&no_support);
+        assert_eq!(candidates,vec![[1,80,0],[2,81,0]]);
     }
     #[test]
     fn pickup_aware_target_priority_prefers_collectible_log_elevations(){
