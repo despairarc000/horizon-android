@@ -242,25 +242,48 @@ fn prefer_pickup_height(logs:&mut [[i32;3]], feet:[f64;3]){
     });
 }
 
-/// Rank only the REAL currently observed standing cells against a
-/// conservative post-break dropped-item height. This is a resource
-/// *selection heuristic*, not evidence that any item spawned or was picked
-/// up. Logs whose drops could fall below every valid pickup box are lower
-/// priority, even if the mining action itself would be in reach.
-fn predicted_pickup_stands(survey:&Survey, log:[i32;3])->usize{
-    survey.terrain.iter().filter(|stand|{
+/// Candidate pre-harvest standing cells come ONLY from Horizon's verified
+/// loaded-world terrain scan. An item is not guaranteed to spawn at the
+/// block's center after destruction, so these are conservative *prospects*,
+/// never evidence of a spawned entity or credited inventory.
+fn prospective_pickup_stands(survey:&Survey,log:[i32;3])->Vec<[i32;3]>{
+    survey.terrain.iter().copied().filter(|stand|{
         let dx=(i64::from(stand[0])-i64::from(log[0])).abs();
         let dz=(i64::from(stand[2])-i64::from(log[2])).abs();
         let feet=f64::from(stand[1]);
-        let low_drop=f64::from(log[1]);
+        let drop_floor=f64::from(log[1]);
         dx<=1 && dz<=1
-            && low_drop>feet-0.6 && low_drop<feet+2.4
-    }).count()
+            && drop_floor>feet-0.6 && drop_floor<feet+2.4
+    }).collect()
+}
+
+/// A geometrically nearby stand is useless if the bot cannot walk, descend
+/// or jump there through *connected* server-verified ground. All routes are
+/// tentative movement plans; the server must independently accept the steps.
+fn pickup_route_to_log(survey:&Survey,log:[i32;3])->Option<RouteStep>{
+    let start=[
+        survey.position[0].floor() as i32,
+        survey.position[1].floor() as i32,
+        survey.position[2].floor() as i32,
+    ];
+    let goals=prospective_pickup_stands(survey,log);
+    first_walk_down_step(start,&goals,&survey.terrain)
+        .or_else(||first_terrain_step(start,&goals,&survey.terrain))
+}
+
+/// Number of potentially useful, already-verified pickup stands *only if*
+/// at least one is connected to this bot's current authoritative position.
+/// This never infers a real future drop or a successful inventory change.
+fn predicted_pickup_stands(survey:&Survey,log:[i32;3])->usize{
+    let goals=prospective_pickup_stands(survey,log);
+    if goals.is_empty() {return 0;}
+    if pickup_route_to_log(survey,log).is_some() {goals.len()} else {0}
 }
 fn prioritize_collectible_logs(logs:&mut [[i32;3]], survey:&Survey){
-    // Preserve the existing nearest/high-ground ordering among equal
-    // predictions. Sorting is stable; avoid generating synthetic targets.
-    logs.sort_by_key(|log|predicted_pickup_stands(survey,*log)==0);
+    // Cache the bounded path computation once per candidate instead of
+    // recomputing BFS during each sort comparison. Preserve prior ordering
+    // among equally accessible real resources.
+    logs.sort_by_cached_key(|log|predicted_pickup_stands(survey,*log)==0);
 }
 
 /// The next ground tile on a real obstacle-aware, local route to a log.
@@ -1037,14 +1060,29 @@ fn run_local(
                     let dx=survey.position[0]-log_center[0];
                     let dz=survey.position[2]-log_center[1];
                     let distance=dx.hypot(dz);
+                    let standing_now=[
+                        survey.position[0].floor() as i32,
+                        survey.position[1].floor() as i32,
+                        survey.position[2].floor() as i32,
+                    ];
+                    // If a *connected* prospective pickup stand exists,
+                    // approach it BEFORE breaking wood. The old behavior
+                    // mined from anywhere within reach and frequently
+                    // left genuine drops outside every reachable pickup box.
+                    let access_route=pickup_route_to_log(survey,log)
+                        .filter(|route|route.at!=standing_now);
                     if !(-1.5..=2.5).contains(&vertical_delta){
                         exploring=true;
-                    } else if distance>2.3 {
-                        if let Some(waypoint)=ground_step_to_log(survey,log) {
+                    } else if distance>2.3 || access_route.is_some() {
+                        if let Some(waypoint)=ground_step_to_log(survey,log)
+                            .filter(|_|access_route.is_none())
+                        {
                             if steering.steer(&mut player,waypoint){
                                 target_memory.attempted_step(log);
                             }
-                        } else if let Some(route)=terrain_step_to_log(survey,log){
+                        } else if let Some(route)=access_route
+                            .or_else(||terrain_step_to_log(survey,log))
+                        {
                             match route.motion {
                                 RouteMotion::Walk=>{
                                     let target=[
@@ -1106,7 +1144,11 @@ fn run_local(
                             ));
                             blocked_pickup_surveys=0;
                             if let Ok(mut target)=watched_target.lock(){*target=Some(log);}
-                            log::info!("Offline ecosystem {name}: mining attempt started at {:?}",log);
+                            log::info!(
+                                "Offline ecosystem {name}: mining attempt started at {:?} connected_pickup_stands={} pickup_route={:?}",
+                                log,predicted_pickup_stands(survey,log),
+                                pickup_route_to_log(survey,log)
+                            );
                         } else {
                             // Tried twice without a confirmed block removal.
                             // Consider a different observed log for a while.
@@ -1520,7 +1562,7 @@ mod tests{
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
             ground:vec![[0,0]],logs:vec![[1,80,0],[2,81,0]],
-            terrain:vec![[0,81,0],[1,81,1]],wood_drops:vec![],
+            terrain:vec![[0,81,0],[1,81,0],[1,81,1]],wood_drops:vec![],
         };
         // Below-feet logs can be mined, but a settled drop at Y=80 is
         // lower than the pickup box of both current standing surfaces.
@@ -1536,6 +1578,56 @@ mod tests{
         let mut candidates=vec![[1,80,0],[2,81,0]];
         prioritize_collectible_logs(&mut candidates,&no_support);
         assert_eq!(candidates,vec![[1,80,0],[2,81,0]]);
+    }
+    #[test]
+    fn preharvest_position_is_reached_before_mining_from_the_edge_of_reach(){
+        let survey=Survey{
+            tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:Some([2,64,0]),watched_log:None,logs:vec![[2,64,0]],
+            wood_drops:vec![],ground:vec![[0,0],[1,0]],
+            terrain:vec![[0,64,0],[1,64,0]],
+        };
+        // This log is already within mining reach, but breaking it here
+        // may leave its drop out of pickup range. First walk to the
+        // connected stand beside the trunk, subject to server approval.
+        assert!(2.0f64<=2.3);
+        assert_eq!(pickup_route_to_log(&survey,[2,64,0]),Some(
+            RouteStep{at:[1,64,0],motion:RouteMotion::Walk}
+        ));
+        assert_eq!(predicted_pickup_stands(&survey,[2,64,0]),1);
+    }
+    #[test]
+    fn disconnected_pickup_stands_do_not_outrank_connected_real_wood(){
+        let survey=Survey{
+            tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,
+            logs:vec![[3,64,0],[1,64,0]],wood_drops:vec![],
+            ground:vec![[0,0]],
+            terrain:vec![[0,64,0],[3,64,1]],
+        };
+        assert_eq!(prospective_pickup_stands(&survey,[3,64,0]),vec![[3,64,1]]);
+        assert_eq!(pickup_route_to_log(&survey,[3,64,0]),None);
+        assert_eq!(predicted_pickup_stands(&survey,[3,64,0]),0);
+        assert!(predicted_pickup_stands(&survey,[1,64,0])>0);
+        let mut order=vec![[3,64,0],[1,64,0]];
+        prioritize_collectible_logs(&mut order,&survey);
+        assert_eq!(order,vec![[1,64,0],[3,64,0]]);
+    }
+    #[test]
+    fn preharvest_pickup_stand_can_use_server_verified_downhill_path(){
+        let survey=Survey{
+            tick:0,on_ground:true,position:[0.5,65.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:Some([2,64,0]),watched_log:None,
+            logs:vec![[2,64,0]],wood_drops:vec![],
+            ground:vec![[0,0]],
+            terrain:vec![[0,65,0],[1,64,0]],
+        };
+        assert_eq!(pickup_route_to_log(&survey,[2,64,0]),Some(
+            RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}
+        ));
     }
     #[test]
     fn pickup_aware_target_priority_prefers_collectible_log_elevations(){
