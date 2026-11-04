@@ -19,7 +19,7 @@ use ecosystem_core::{
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
     explore::ExplorationMemory,
-    terrain_path::{first_terrain_step,RouteMotion,RouteStep,StepDownController},
+    terrain_path::{first_walk_down_step,RouteMotion,RouteStep,StepDownController},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -199,18 +199,23 @@ fn ground_candidates<F:FnMut([i32;3])->bool>(
     out
 }
 
-/// Probe nearby elevations without guessing walkability from a heightmap.
-/// The caller validates support, clearance, fluids and loaded chunks for
-/// every returned [x,y,z]. Vertical routes are not executed yet.
+/// Probe an 11x11x3 bounded neighborhood without guessing walkability.
+/// Every returned surface has server-verified support, body clearance,
+/// absence of blocking fluids, and a loaded chunk. Walking and one-block
+/// descending are supported; jumping is still not implemented.
 fn terrain_candidates<F:FnMut([i32;3])->bool>(
     center:[i32;3],mut is_standable:F
 )->Vec<[i32;3]>{
-    let mut out=Vec::with_capacity(147);
-    for dx in -3..=3 {
-        for dz in -3..=3 {
+    let mut out=Vec::with_capacity(363);
+    for dx in -5i32..=5 {
+        for dz in -5i32..=5 {
             for dy in [-1,0,1] {
-                if let Some(y)=center[1].checked_add(dy){
-                    let p=[center[0]+dx,y,center[2]+dz];
+                if let (Some(x),Some(y),Some(z))=(
+                    center[0].checked_add(dx),
+                    center[1].checked_add(dy),
+                    center[2].checked_add(dz),
+                ) {
+                    let p=[x,y,z];
                     if is_standable(p){out.push(p);}
                 }
             }
@@ -307,7 +312,7 @@ fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
     };
     let goals:Vec<[i32;3]>=survey.terrain.iter().copied()
         .filter(|&p|pickup_goal(p)).collect();
-    if let Some(route)=first_terrain_step(start,&goals,&survey.terrain){
+    if let Some(route)=first_walk_down_step(start,&goals,&survey.terrain){
         return Some(route);
     }
     // Optimize distance plus a penalty for item heights outside the
@@ -330,7 +335,7 @@ fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
     frontiers.sort_by(|a,b|score(*a).total_cmp(&score(*b))
         .then_with(||a.cmp(b)));
     frontiers.into_iter().find_map(|goal|
-        first_terrain_step(start,&[goal],&survey.terrain)
+        first_walk_down_step(start,&[goal],&survey.terrain)
     )
 }
 
@@ -675,12 +680,10 @@ fn run_local(
                                 }
                             },
                             RouteMotion::JumpUp=>{
-                                if survey.tick%160==0 {
-                                    log::info!(
-                                        "Offline ecosystem {name}: pickup awaits a normal jump to verified surface {:?}",
-                                        route.at
-                                    );
-                                }
+                                // Defensive: current pickup planning chooses only
+                                // Walk/StepDown routes, never an unimplemented jump.
+                                log::warn!("Offline ecosystem {name}: unexpected jump-only pickup step {:?}",
+                                    route.at);
                             },
                         }
                     }
@@ -915,6 +918,20 @@ mod tests{
         assert_eq!(ground.len(),4);
         assert_eq!(ground[0],[10,20]);
         assert_eq!(ground[3],[10,23]);
+    }
+    #[test]
+    fn expanded_terrain_survey_finds_connected_detour_five_blocks_away(){
+        let p=terrain_candidates([0,65,0],|[x,y,z]|{
+            y==65 && z==2 && (-5..=5).contains(&x)
+                || y==65 && x==0 && (0..=2).contains(&z)
+                || y==65 && x==4 && (0..=2).contains(&z)
+                || y==64 && x==4 && z==0
+        });
+        assert!(p.contains(&[4,64,0]));
+        assert!(p.contains(&[0,65,2]));
+        assert!(p.len()<=363);
+        assert_eq!(first_walk_down_step([0,65,0],&[[4,64,0]],&p),
+            Some(RouteStep{at:[0,65,1],motion:RouteMotion::Walk}));
     }
     #[test]fn terrain_probe_find_stands_at_nearby_different_heights(){
         let all=terrain_candidates([10,64,20],|[x,y,z]|
