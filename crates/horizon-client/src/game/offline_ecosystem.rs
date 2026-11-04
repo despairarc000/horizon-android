@@ -245,6 +245,8 @@ impl ExperimentalBots {
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
             let logs=log_candidates(center,|here|is_log(here)==Some(true));
             let ground=ground_candidates(center,&mut is_standable);
+            let logs_count=logs.len();
+            let ground_count=ground.len();
             let nearest=logs.first().copied();
             let watched_log=sink.watched_target.try_lock().ok()
                 .and_then(|guard|*guard)
@@ -277,14 +279,14 @@ impl ExperimentalBots {
                 // It is stronger evidence than the worker simply spawning.
                 log::info!(
                     "Offline ecosystem {}: first authoritative survey at {:.2},{:.2},{:.2} logs={} ground_tiles={}",
-                    sink.name,pos[0],pos[1],pos[2],logs.len(),ground.len()
+                    sink.name,pos[0],pos[1],pos[2],logs_count,ground_count
                 );
                 sink.first_observation_logged=true;
             }
             if sent.is_ok() && self.survey_ticks%160==0 {
                 log::info!(
                     "Offline ecosystem {}: exploration survey position {:.2},{:.2},{:.2} logs={} ground_tiles={} wood_inventory={}",
-                    sink.name,pos[0],pos[1],pos[2],logs.len(),ground.len(),wood_inventory
+                    sink.name,pos[0],pos[1],pos[2],logs_count,ground_count,wood_inventory
                 );
             }
         }
