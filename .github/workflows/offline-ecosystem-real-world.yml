@@ -86,7 +86,9 @@ jobs:
           for bot in ['EcoAI0','EcoAI1']:
               assert any(bot in line and 'logged in' in line for line in logs.splitlines()), (
                   f'{bot} did not enter the actual integrated server')
-          print('Two actual integrated-server bot identities verified')
+              assert f'Offline ecosystem {bot}: first authoritative survey' in logs, (
+                  f'{bot} did not receive a loaded-world server observation')
+          print('Two actual integrated-server bots received authoritative world surveys')
           PY
       - name: Check resource boundary
         if: always()

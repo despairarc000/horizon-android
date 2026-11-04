@@ -38,6 +38,7 @@ struct Survey {
 struct SurveySink {
     name: String,
     tx: SyncSender<Survey>,
+    first_observation_logged: bool,
 }
 
 /// Temporary one-thread-per-nearby-player structure, bounded to 3.
@@ -168,7 +169,7 @@ impl ExperimentalBots {
             {
                 Ok(worker)=>{
                     workers.push(worker);
-                    senders.push(SurveySink{name,tx});
+                    senders.push(SurveySink{name,tx,first_observation_logged:false});
                 },
                 Err(error)=>log::warn!("Offline ecosystem: worker spawn failed: {error}"),
             }
@@ -187,7 +188,7 @@ impl ExperimentalBots {
     {
         self.survey_ticks+=1;
         if self.survey_ticks%8!=0{return;}
-        for sink in &self.senders{
+        for sink in &mut self.senders{
             let Some(guest)=guests.iter().find(|g|
                 g.name==sink.name && g.dimension==dimension && g.placed &&
                 g.loaded && !g.loading
@@ -201,7 +202,7 @@ impl ExperimentalBots {
                 inventory_supply(&guest.inventory,&mut is_edible);
             // One outstanding observation maximum per player. If a worker
             // is behind, discard instead of blocking the game tick.
-            let _=sink.tx.try_send(Survey{
+            let sent=sink.tx.try_send(Survey{
                 tick:self.survey_ticks,
                 position:pos,
                 health:guest.health,
@@ -212,6 +213,16 @@ impl ExperimentalBots {
                 nearby_log:nearest,
                 logs,
             });
+            if sent.is_ok() && !sink.first_observation_logged {
+                // This occurs only after Horizon has accepted the player
+                // and supplied a valid server-authoritative loaded position.
+                // It is stronger evidence than the worker simply spawning.
+                log::info!(
+                    "Offline ecosystem {}: first authoritative survey at {:.2},{:.2},{:.2}",
+                    sink.name,pos[0],pos[1],pos[2]
+                );
+                sink.first_observation_logged=true;
+            }
         }
     }
 }
