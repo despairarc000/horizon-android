@@ -63,6 +63,77 @@ pub fn first_terrain_step(
     None
 }
 
+/// One conservative player motion packet requested by a one-block descent.
+/// These are local *requests*; only a later server survey proves movement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DescentMotion {
+    pub dx: f64,
+    pub dy: f64,
+    pub dz: f64,
+    pub on_ground: bool,
+}
+
+/// Bounded falling controller for an adjacent, server-verified standing
+/// surface exactly one block lower. It does NOT bypass Horizon's movement
+/// collision, chunk loading, or survival health/fall-damage simulation.
+/// Horizontal movement first reaches the lip, then falling uses a small
+/// acceleration and a final exactly-on-ground step to the safe lower tile.
+#[derive(Clone, Debug)]
+pub struct StepDownController {
+    pub destination: [i32;3],
+    vertical_speed: f64,
+}
+impl StepDownController {
+    pub fn begin(at:[f64;3],destination:[i32;3])->Option<Self>{
+        if !at.iter().all(|v|v.is_finite()){return None;}
+        let from=[at[0].floor() as i32,at[1].floor() as i32,at[2].floor() as i32];
+        let dx=(i64::from(destination[0])-i64::from(from[0])).abs();
+        let dz=(i64::from(destination[2])-i64::from(from[2])).abs();
+        if dx+dz!=1 || i64::from(from[1])-i64::from(destination[1])!=1 {
+            return None;
+        }
+        Some(Self {destination,vertical_speed:0.0})
+    }
+    /// None means local predicted completion or a rejected/invalid position;
+    /// neither counts as a verified safe landing. The caller must wait for
+    /// authoritative location or time out and replan.
+    pub fn next(&mut self,at:[f64;3])->Option<DescentMotion>{
+        if !at.iter().all(|v|v.is_finite()) {return None;}
+        let floor=f64::from(self.destination[1]);
+        if at[1] < floor-0.05 || at[1]>floor+1.20 || at[1]<=floor+0.01 {
+            return None;
+        }
+        let tx=f64::from(self.destination[0])+0.5;
+        let tz=f64::from(self.destination[2])+0.5;
+        let dx=tx-at[0];
+        let dz=tz-at[2];
+        let distance=dx.hypot(dz);
+        if !distance.is_finite() || distance>1.8 {return None;}
+        // Walk toward the ledge with normal ground-claim packets. At a
+        // horizontal separation of <=0.22, most of a 0.6-wide body is clear
+        // of the higher support, so the downward packet can be collision
+        // tested normally by Horizon's server.
+        if distance>0.22 {
+            let step=distance.min(0.20);
+            return Some(DescentMotion{
+                dx:dx/distance*step,dy:0.0,dz:dz/distance*step,on_ground:true
+            });
+        }
+        // A bounded approximation of survival gravity, not teleportation.
+        // A standard downward acceleration is applied once each client tick.
+        self.vertical_speed=(self.vertical_speed-0.08)*0.98;
+        let descend=(-self.vertical_speed).clamp(0.01,0.30).min(at[1]-floor);
+        let landed=at[1]-descend<=floor+1e-8;
+        let drift=distance.min(0.15);
+        Some(DescentMotion{
+            dx:if distance>1e-8{dx/distance*drift}else{0.0},
+            dy:-descend,
+            dz:if distance>1e-8{dz/distance*drift}else{0.0},
+            on_ground:landed,
+        })
+    }
+}
+
 /// Confirmed safe standing cells close enough to attempt harvesting a log.
 /// The action itself must independently pass Horizon's raycast and reach tests.
 pub fn adjacent_terrain_goals(log:[i32;3],stands:&[[i32;3]])->Vec<[i32;3]>{
@@ -78,6 +149,41 @@ pub fn adjacent_terrain_goals(log:[i32;3],stands:&[[i32;3]])->Vec<[i32;3]>{
 mod tests{
     use super::*;
 
+    #[test]
+    fn descent_is_cardinal_and_exactly_one_block(){
+        assert!(StepDownController::begin([0.5,65.,0.5],[1,64,0]).is_some());
+        assert!(StepDownController::begin([0.5,65.,0.5],[1,63,0]).is_none());
+        assert!(StepDownController::begin([0.5,65.,0.5],[1,64,1]).is_none());
+        assert!(StepDownController::begin([0.5,65.,0.5],[0,65,1]).is_none());
+        assert!(StepDownController::begin([f64::NAN,65.,0.5],[1,64,0]).is_none());
+    }
+    #[test]
+    fn descent_requests_only_small_downward_steps_then_ground_contact(){
+        let mut controller=StepDownController::begin([0.5,65.,0.5],[1,64,0]).unwrap();
+        let mut at=[0.5,65.,0.5];
+        let mut falling=0;
+        let mut landed=false;
+        for _ in 0..32 {
+            let Some(m)=controller.next(at) else {break;};
+            assert!(m.dx.hypot(m.dz)<=0.200001);
+            assert!((-0.300001..=0.0).contains(&m.dy));
+            assert!(m.dy<=0.0);
+            if m.dy<0.0 { falling+=1; }
+            if m.on_ground && m.dy<0.0 { landed=true; }
+            at=[at[0]+m.dx,at[1]+m.dy,at[2]+m.dz];
+        }
+        assert!(falling>=3,"instant one-block drop would bypass physics");
+        assert!(landed,"must finish with server-verifiable ground claim");
+        assert!((at[1]-64.0).abs()<1e-8);
+        assert!((at[0]-1.5).abs()<0.02);
+    }
+    #[test]
+    fn descent_rejects_far_disconnected_and_invalid_positions(){
+        let mut controller=StepDownController::begin([0.5,65.,0.5],[1,64,0]).unwrap();
+        assert_eq!(controller.next([10.0,65.0,0.5]),None);
+        assert_eq!(controller.next([0.5,62.0,0.5]),None);
+        assert_eq!(controller.next([0.5,65.0,f64::INFINITY]),None);
+    }
     #[test]
     fn walks_on_flat_verified_ground(){
         let known=[[0,64,0],[1,64,0],[2,64,0]];
