@@ -167,6 +167,8 @@ fn connect(port: u16, name: &str, known_pack: bool) -> Result<Bot, String> {
 struct Server {
     hub: Hub,
     world: World,
+    /// Optional real cached block-collision registry for movement tests.
+    collision: Option<horizon_world::block_collision::BlockCollisionRegistry<'static>>,
     next_entity: u32,
     placed: Vec<(u32, [i32; 3], u32, i32)>,
 }
@@ -205,7 +207,7 @@ impl Server {
             tick_rate: 20.0,
             tick_frozen: false,
             tick_steps: (0, 0),
-            collision: None,
+            collision: self.collision.as_ref(),
             border: &horizon_client::worldborder::WorldBorder::default(),
             streaming: None,
         };
@@ -275,6 +277,7 @@ fn server_with(resources: &Path, net: NetConfig) -> Server {
     Server {
         hub,
         world: flat_world(),
+        collision: None,
         next_entity: 100,
         placed: Vec::new(),
     }
@@ -1449,11 +1452,10 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
 }
 
 /// In-memory protocol regression against the real Horizon LAN hub,
-/// configured with survival game mode and a one-block stone step.
-/// The existing lan_bot test harness passes collision=None to TickCtx:
-/// this checks server movement acceptance and ground-flag handling, NOT
-/// collision-resolved jumping, natural harvesting, or full game physics.
-/// The resource-backed world runner remains the real collision test.
+/// survival game mode, and a one-block stone step. This test explicitly
+/// enables Horizon's version-pinned block-collision registry so motion
+/// must pass server collision checks, not just parse transport packets.
+/// It does not prove natural wood pickup or the whole game simulation.
 #[test]
 fn offline_ecosystem_survival_jump_lands_on_server_known_stone_step(){
     use ecosystem_core::terrain_path::StepUpController;
@@ -1461,6 +1463,17 @@ fn offline_ecosystem_survival_jump_lands_on_server_known_stone_step(){
     let mut server=server(&resources);
     server.hub.config.default_game_mode=0;
     server.hub.config.allow_flight=false;
+    let assets=horizon_client::assets::Assets::load(&resources)
+        .expect("load official collision assets");
+    assert_eq!(
+        assets.registry.state(BlockStateId(STONE))
+            .expect("stone state present").name,
+        "minecraft:stone",
+        "collision fixture's stone state must match the real registry"
+    );
+    server.collision=Some(horizon_client::collisions::load(
+        &resources,assets.registry
+    ).expect("pinned Minecraft collision registry"));
     // Spawn is [8.5,MIN_Y+5,8.5]; place a genuine solid step ahead.
     // No drops, commands, teleport-based movement, or inventory rewards.
     let higher=[9,MIN_Y+5,8];
