@@ -63,6 +63,6 @@ jobs:
       - name: Real Horizon in-memory LAN login without Minecraft assets
         run: cargo test -p horizon-client --no-default-features --lib offline_ecosystem -- --nocapture
       - name: Compile Horizon LAN and local bot integration
-        run: cargo test -p horizon-client --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
+        run: cargo test -p horizon-client --no-default-features --test lan_bot offline_ecosystem_ -- --nocapture
       - name: Typecheck experimental in-game integration
         run: cargo check -p horizon-client --no-default-features --bin horizon-client
