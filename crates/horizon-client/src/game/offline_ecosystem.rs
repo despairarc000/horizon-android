@@ -1478,9 +1478,9 @@ mod tests{
         };
         // Physically observed but disconnected items do not create paths.
         assert_eq!(scavengable_wood_route(&survey),None);
-        survey.wood_drops.push([1.5,64.0,0.5]);
+        survey.wood_drops.push([2.6,64.0,0.5]);
         assert_eq!(scavengable_wood_route(&survey),Some((
-            [1.5,64.0,0.5],
+            [2.6,64.0,0.5],
             RouteStep{at:[1,64,0],motion:RouteMotion::Walk},
         )));
         // An invalid or missing server item is never invented as a goal.
