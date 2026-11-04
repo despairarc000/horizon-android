@@ -564,9 +564,31 @@ fn run_local(
             if let Some(drop)=watched_wood_drop(survey,probe.target) {
                 let already_near=(survey.position[0]-drop[0]).abs()<1.25
                     && (survey.position[2]-drop[2]).abs()<1.25;
-                if !already_near {
+                let same_pickup_height=drop[1]>survey.position[1]-0.6
+                    && drop[1]<survey.position[1]+2.4;
+                if same_pickup_height && !already_near {
                     if let Some(waypoint)=ground_step_to_drop(survey,drop){
                         steering.steer(&mut player,waypoint);
+                    }
+                } else if !same_pickup_height {
+                    // A 3D route is not proof the client can descend or
+                    // jump. Only execute an actual same-height WALK prefix.
+                    if let Some(route)=terrain_step_to_drop(survey,drop) {
+                        match route.motion {
+                            RouteMotion::Walk=>{
+                                let target=[f64::from(route.at[0])+0.5,
+                                            f64::from(route.at[2])+0.5];
+                                steering.steer(&mut player,target);
+                            },
+                            RouteMotion::StepDown|RouteMotion::JumpUp=>{
+                                if survey.tick%160==0 {
+                                    log::info!(
+                                        "Offline ecosystem {name}: pickup awaits physics-controlled {:?} to verified surface {:?}",
+                                        route.motion,route.at
+                                    );
+                                }
+                            },
+                        }
                     }
                 }
             }
