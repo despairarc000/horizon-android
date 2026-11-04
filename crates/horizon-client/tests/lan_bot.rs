@@ -1448,6 +1448,59 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
     );
 }
 
+/// Purpose-built physical-motion regression using the real in-memory
+/// Horizon LAN hub, authentic survival-mode movement packets and a simple
+/// preexisting stone step. This proves hub movement acceptance, NOT natural
+/// item harvesting or the complete game physics simulation.
+#[test]
+fn offline_ecosystem_survival_jump_lands_on_server_known_stone_step(){
+    use ecosystem_core::terrain_path::StepUpController;
+    let Some(resources)=resources() else{return;};
+    let mut server=server(&resources);
+    server.hub.config.default_game_mode=0;
+    server.hub.config.allow_flight=false;
+    // Spawn is [8.5,MIN_Y+5,8.5]; place a genuine solid step ahead.
+    // No drops, commands, teleport-based movement, or inventory rewards.
+    let higher=[9,MIN_Y+5,8];
+    server.world.set(higher[0],higher[1],higher[2],BlockStateId(STONE))
+        .unwrap();
+    let pipe=server.hub.lan.connect_local().expect("in-memory LAN pipe");
+    let predicted=run(&mut server,move||{
+        let mut player=LocalPlayer::join(pipe,"EcosystemJump",3)?;
+        let deadline=Instant::now()+Duration::from_secs(20);
+        while !player.state.ready{
+            if Instant::now()>deadline{return Err("no prepared chunk after login".into());}
+            player.pump_one()?;
+        }
+        let spawn=player.state.position.ok_or("spawn missing")?;
+        let destination=[9,MIN_Y+6,8];
+        let mut controller=StepUpController::begin(spawn,destination)
+            .ok_or("no verified one-block jump geometry")?;
+        let mut requested_landing=false;
+        for _ in 0..18{
+            let at=player.state.position.ok_or("missing local position")?;
+            let Some(m)=controller.next(at) else {break;};
+            player.jump_delta(m.dx,m.dy,m.dz,m.on_ground)?;
+            player.client_tick_end()?;
+            if m.on_ground {requested_landing=true;break;}
+            thread::sleep(Duration::from_millis(40));
+        }
+        if !requested_landing {
+            return Err("bounded jump could not produce a ground-contact request".into());
+        }
+        thread::sleep(Duration::from_millis(150));
+        Ok(player.state.position.ok_or("missing predicted landing")?)
+    });
+    let guest=server.hub.guests.iter()
+        .find(|g|g.name=="EcosystemJump").expect("guest not found");
+    assert_eq!(guest.game_mode,0,"fixture must test survival mode");
+    assert!((guest.position[0]-predicted[0]).abs()<0.20,
+        "normal Hub movement never accepted the horizontal jump");
+    assert!((guest.position[1]-f64::from(MIN_Y+6)).abs()<0.15,
+        "Hub did not accept the higher landing in physical server position");
+    assert!(guest.on_ground,"server did not confirm the player on ground");
+}
+
 #[test]
 fn offline_ecosystem_player_joins_real_horizon_hub_through_memory(){
     // Unlike the standalone fake-server tests, this exercises Horizon's
