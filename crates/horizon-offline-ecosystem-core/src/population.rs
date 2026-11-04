@@ -5,7 +5,7 @@ const MAX_EVENTS: usize = 4096;
 const MAX_SAVE_BYTES: usize = 10 * 1024 * 1024;
 use crate::{BotView,Intent,LocalObservation,Needs,Personality,Resolution,choose_intent};
 
-#[derive(Clone,Debug,PartialEq,Eq)
+#[derive(Clone,Debug,PartialEq,Eq, serde::Serialize, serde::Deserialize)]
 pub struct Region {
     pub exits:Vec<usize>,
     pub food:u32,
@@ -17,7 +17,7 @@ impl Region {
         Self{exits,food,wood,shelter:false}
     }
 }
-#[derive(Clone,Debug,PartialEq)
+#[derive(Clone,Debug,PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Individual {
     pub id:u32,
     pub region:usize,
@@ -37,12 +37,12 @@ impl Individual {
             visited:BTreeSet::new(),alive:true}
     }
 }
-#[derive(Clone,Copy,Debug,PartialEq,Eq)
+#[derive(Clone,Copy,Debug,PartialEq,Eq, serde::Serialize, serde::Deserialize)]
 pub struct Event {
     pub tick:u64,pub bot_id:u32,pub intent:Intent,
     pub from:usize,pub to:usize,
 }
-#[derive(Clone,Debug,PartialEq)
+#[derive(Clone,Debug,PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Population {
     pub regions:Vec<Region>,
     pub bots:Vec<Individual>,

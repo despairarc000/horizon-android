@@ -1,7 +1,7 @@
 //! Offline population decision core. No cloud calls, LLM, graphics, or network.
 //! Pure deterministic logic; all player actions must be validated by Horizon's server.
 
-#[derive(Clone, Copy, Debug, PartialEq)
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Personality {
     pub curiosity: f32,
     pub aggression: f32,
@@ -16,7 +16,7 @@ impl Personality {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Needs {
     pub hunger: u8,
     pub energy: u8,
@@ -49,7 +49,7 @@ impl Resolution {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Intent {
     Flee,
     Defend,
