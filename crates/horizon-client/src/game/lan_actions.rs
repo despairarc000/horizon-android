@@ -4295,6 +4295,13 @@ impl Game<'_> {
         if mode == SPECTATOR || self.dropped.is_empty() {
             return;
         }
+        // Only opt-in same-process ecosystem bots are instrumented. A
+        // successful inventory transfer below is stronger evidence than
+        // a nearby entity, mining ACK or change in a later survey.
+        let eco_pickup_name=host.experimental_bots.as_ref()
+            .and_then(|_|host.hub.guests.get(gi))
+            .filter(|guest|guest.name.starts_with("EcoAI"))
+            .map(|guest|guest.name.clone());
         if host.experimental_bots.is_some()
             && host.hub.guests[gi].name.starts_with("EcoAI")
             && host.hub.ticks.is_multiple_of(160)
@@ -4355,6 +4362,8 @@ impl Game<'_> {
                 continue;
             }
             let stack = self.dropped[i].stack.clone();
+            let kind=stack.item.clone();
+            let tracked_wood=kind.ends_with("_log")||kind.ends_with("_stem");
             let before = stack.count;
             let thrower = self.dropped[i].thrower;
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
@@ -4368,6 +4377,14 @@ impl Game<'_> {
                     }
                     self.guest_pickup(host, id, item);
                     taken.push((item_id, before));
+                    if tracked_wood {
+                        if let Some(name)=eco_pickup_name.as_deref(){
+                            log::info!(
+                                "Offline ecosystem {name}: server accepted wood pickup item={} count={} drop_entity={item_id}",
+                                kind,before
+                            );
+                        }
+                    }
                 }
                 Some(rest) if rest.count < before => {
                     self.guest_pickup(host, id, self.dropped[i].clone());
@@ -4378,7 +4395,16 @@ impl Game<'_> {
                             g.trigger_thrown_picked_up_by_player(&left, thrower);
                         });
                     }
-                    taken.push((item_id, before - self.dropped[i].stack.count));
+                    let transferred=before-self.dropped[i].stack.count;
+                    taken.push((item_id, transferred));
+                    if tracked_wood {
+                        if let Some(name)=eco_pickup_name.as_deref(){
+                            log::info!(
+                                "Offline ecosystem {name}: server accepted wood pickup item={} count={} drop_entity={item_id}",
+                                kind,transferred
+                            );
+                        }
+                    }
                 }
                 Some(_) => {}
             }
