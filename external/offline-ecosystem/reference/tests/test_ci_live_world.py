@@ -113,12 +113,13 @@ class DownhillMovementTests(unittest.TestCase):
     def test_only_server_confirmed_lower_surface_counts_as_landing(self):
         logs=[
             "Offline ecosystem EcoAI0: attempting normal downhill movement to verified surface [1, 64, 0]",
+            "Offline ecosystem EcoAI1: exploring downhill toward verified surface [2, 64, 0]",
             "Offline ecosystem EcoAI1: downhill packet rejected: destination chunk unavailable",
             "Offline ecosystem EcoAI0: server-authoritative downhill landing at [1, 64, 0]",
             "Offline ecosystem EcoAI1: downhill motion unconfirmed; backing off from [2, 64, 0]",
         ]
         evidence=downhill_report(logs)
-        self.assertEqual(evidence["downhill_attempts"],1)
+        self.assertEqual(evidence["downhill_attempts"],2)
         self.assertEqual(evidence["server_confirmed_landings"],1)
         self.assertEqual(evidence["unconfirmed_timeouts"],1)
         self.assertEqual(evidence["rejected_packets"],1)
