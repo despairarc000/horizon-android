@@ -253,6 +253,33 @@ impl LocalPlayer {
         self.state.position=Some(next);
         Ok(next)
     }
+    /// Send a single small downward movement using normal survival player
+    /// packets. This does not cause a teleport or invent physics, collision
+    /// or landing; the server remains the final authority.
+    /// Only a confirmed 3D surface route may request this action.
+    pub fn descend_delta(&mut self,dx:f64,dy:f64,dz:f64,on_ground:bool)
+        ->Result<[f64;3],String>
+    {
+        let at=self.state.position.ok_or("missing spawn")?;
+        if !self.state.ready{return Err("current chunk not ready".into());}
+        if ![dx,dy,dz].iter().all(|v|v.is_finite())
+            || dx*dx+dz*dz>0.040001
+            || !(-0.300001..0.0).contains(&dy)
+        {
+            return Err("descent packet exceeds bounded survival movement".into());
+        }
+        let next=[at[0]+dx,at[1]+dy,at[2]+dz];
+        if !next.iter().all(|v|v.is_finite()) || !self.has_chunk(next) {
+            return Err("descent destination chunk unavailable".into());
+        }
+        self.send(play::Serverbound::MovePlayerPos(play::MovePlayerPos{
+            x:next[0],y:next[1],z:next[2],flags:u8::from(on_ground)
+        }))?;
+        // This is only a local prediction. The next server survey will
+        // reconcile physical position and can disprove the requested landing.
+        self.state.position=Some(next);
+        Ok(next)
+    }
     /// One conservative horizontal steering action toward a known target.
     /// This is a low-level action, not pathfinding. It cannot cross obstacles,
     /// climb, jump or validate a survival task, and may be corrected by server.
