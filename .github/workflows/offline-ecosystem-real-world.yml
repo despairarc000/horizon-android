@@ -1,5 +1,7 @@
 name: Offline ecosystem real-world integration
 # One-off trigger: file changes, plus optional workflow dispatch when available.
+# First verified natural harvest (#41826770398): three real inventory gains.
+# Require at least one repeatable wood gain, two moving bots and no loop.
 # Multi-edge vertical loop regression: verify server-observed plateau transitions
 # do not repeat indefinitely; check actual wood inventory separately.
 # Connected wood-only trial (2026-11-04): confirm that the bot refuses
@@ -126,7 +128,10 @@ jobs:
             --resources .local/horizon-client/26.3 \
             --scratch .local/ecosystem-headless \
             --timeout-seconds 140 \
-            --post-ready-seconds 70
+            --post-ready-seconds 70 \
+            --min-moving-bots 2 \
+            --min-excursion-blocks 1 \
+            --min-wood-gain 1
       - name: Check resource boundary
         if: always()
         run: |
