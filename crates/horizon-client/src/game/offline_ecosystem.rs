@@ -804,8 +804,14 @@ fn run_local(
             let flat_step=exploration.choose_next(
                 at,&survey.ground,survey.tick,index as u32
             );
+            // If wood is visible but none is physically approachable,
+            // explore for a downhill connection instead of oscillating
+            // indefinitely among a few familiar flat tiles. The server
+            // already supplied only loaded, supported, dry standing cells.
+            let blocked_wood=!survey.logs.is_empty() && survey.nearby_log.is_none();
             let downhill=if survey.tick>=descent_cooldown
-                && (survey.ground.len()<=3
+                && (blocked_wood
+                    || survey.ground.len()<=3
                     || exploration.visited_count()>16
                     || flat_step.is_none())
             {
@@ -954,6 +960,23 @@ mod tests{
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
         survey.terrain=vec![[0,65,0],[2,64,0]];
         assert_eq!(exploratory_downhill_step(&survey),None);
+    }
+    #[test]
+    fn visible_but_unreachable_wood_triggers_downhill_exploration(){
+        let survey=Survey{
+            tick:10,position:[0.5,65.0,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![[4,65,0]],
+            wood_drops:vec![],ground:vec![[0,0],[1,0],[2,0],[3,0]],
+            terrain:vec![[0,65,0],[1,65,0],[2,65,0],
+                         [3,65,0],[3,64,1]],
+        };
+        assert!(!survey.logs.is_empty() && survey.nearby_log.is_none());
+        // The abstract safe downhill route is only a plan; server position
+        // still decides whether a physical landing happened.
+        assert_eq!(exploratory_downhill_step(&survey),Some(
+            RouteStep{at:[1,65,0],motion:RouteMotion::Walk}
+        ));
     }
     #[test]
     fn connected_downhill_escape_can_first_walk_across_plateau(){
