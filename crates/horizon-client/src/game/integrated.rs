@@ -716,6 +716,13 @@ impl Game<'_> {
             integrated: true,
         };
         let owner = launch.owner;
+        let requested_bots = super::offline_ecosystem::configured_count(
+            std::env::var("HORIZON_ECOSYSTEM_EXPERIMENTAL_BOTS").ok().as_deref()
+        );
+        // Horizon refuses unknown players while single-player is private.
+        // Register only the requested in-memory identities, without granting
+        // creative mode, owner commands, or LAN authentication exemptions.
+        register_experimental_local_seats(flags, requested_bots);
         let published = flags.clone();
         let local_players = flags.clone();
         let net = NetConfig {
@@ -1201,6 +1208,21 @@ fn server_game(
 /// Who the integrated server turns away: anyone but the owner until it is opened to the LAN,
 /// except a splitscreen seat. A seat's name is let in only through memory, so a LAN player
 /// logging in under it never gets its place or the owner's permissions it holds.
+/// Register strictly opt-in local-only bot identities for the lifetime of
+/// this integrated server. These seats have NO operator privileges; only
+/// split-screen's already-existing memory-only admission rule applies.
+/// A remote client spoofing the same names remains refused.
+fn register_experimental_local_seats(flags: &Flags, count: usize) {
+    if count == 0 { return; }
+    let mut seats = flags.split_players.lock().unwrap();
+    for i in 0..count.min(3) {
+        let identity = offline_uuid(&format!("EcoAI{i}"));
+        if !seats.contains(&identity) {
+            seats.push(identity);
+        }
+    }
+}
+
 fn refused(owner: bool, published: bool, split_seat: bool, memory: bool) -> bool {
     if split_seat {
         !memory
@@ -1228,6 +1250,21 @@ mod tests {
         );
         assert!(refused(false, false, false, false), "nobody else before");
         assert!(!refused(true, false, false, true), "the owner");
+    }
+
+    #[test]
+    fn experimental_bot_seats_stay_memory_only_and_are_bounded() {
+        let flags=Flags::default();
+        register_experimental_local_seats(&flags, 2);
+        register_experimental_local_seats(&flags, 2);
+        let seats=flags.split_players.lock().unwrap();
+        assert_eq!(seats.len(), 2, "repeat registration must not duplicate seats");
+        assert!(seats.contains(&offline_uuid("EcoAI0")));
+        assert!(seats.contains(&offline_uuid("EcoAI1")));
+        assert!(!seats.contains(&offline_uuid("EcoAI2")));
+        assert!(!refused(false,false,true,true), "memory bot is admitted");
+        assert!(refused(false,false,true,false), "LAN spoof stays blocked");
+        assert!(refused(false,false,false,true), "unregistered memory login stays blocked");
     }
 
     #[test]

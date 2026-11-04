@@ -55,7 +55,7 @@ impl Drop for ExperimentalBots {
         // login may need that thread to finish. Hub shutdown closes its pipe.
     }
 }
-fn configured_count(value: Option<&str>) -> usize {
+pub(super) fn configured_count(value: Option<&str>) -> usize {
     value.and_then(|v| v.parse().ok())
         .filter(|n| (1..=3).contains(n))
         .unwrap_or(0)
