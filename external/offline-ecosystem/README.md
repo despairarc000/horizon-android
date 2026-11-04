@@ -24,7 +24,7 @@ The Python reference simulator is a small **logical room graph**, not Minecraft 
 4. Add realized/abstract/coarse transitions with persistence and real conservation invariants.
 5. Benchmark bot counts and game performance on the Android phone.
 
-Two experimental headless players have joined and moved in a **real integrated Minecraft world**. No reliable wood-harvesting success, production-ready Minecraft bot, generated APK, or Android performance result is claimed. Keep vanilla rules and game resources intact.
+Two experimental headless players have joined and moved in a **real integrated Minecraft world**. A natural-world run has now verified a **first successful three-log survival harvest** by one bot (details below). Repeatability, crafting, real-world food acquisition, a production-ready bot, an Android build and Android performance remain unverified. Keep vanilla rules and game resources intact.
 
 ## Persistence and memory bounds
 
@@ -36,7 +36,7 @@ The fork now has a temporary, **opt-in only** host-side local-player probe:
 
     HORIZON_ECOSYSTEM_EXPERIMENTAL_BOTS=2
 
-Set it in the process environment **before launching a locally built Horizon game** using a scratch world. Allowed values are 1–3; all other values, including unset, create zero bots. It attaches headless in-process protocol players to the real LAN hub. The players now use the Rust decision selector and server-sensed resource targets, safe level-ground exploration with blocked-step recovery, basic survival inventory/food observations, and real mining packets. 3D terrain planning exists but **jumping and falling are not yet executed**. No crafting, construction, social behavior, sustained survival, or abstract offscreen population is implemented.
+Set it in the process environment **before launching a locally built Horizon game** using a scratch world. Allowed values are 1–3; all other values, including unset, create zero bots. It attaches headless in-process protocol players to the real LAN hub. The players now use the Rust decision selector and server-sensed resource targets, safe level-ground exploration with blocked-step recovery, basic survival inventory/food observations, and real mining packets. Server-verified one-block ascents and descents are now executed experimentally; wider 3D navigation is incomplete. No crafting, construction, social behavior, sustained survival, or abstract offscreen population is implemented.
 
 Normal public CI runs resource-free core, network, and reference tests. Separately, `.github/workflows/offline-ecosystem-real-world.yml` retrieves the pinned official game resources into a private ephemeral CI workspace and runs a true two-bot loaded-world test. **Only the real-world log's server positions and inventory changes count as gameplay proof.**
 
@@ -44,7 +44,7 @@ The current configuration is a desktop/developer environment variable; the Andro
 
 ## Harvesting diagnostic after live acceptance
 
-The real-world CI harness now continues for 70 seconds after both bots are loaded. It reports the actual number of mining starts, exact server-confirmed target removals, correlated survival inventory gains, and unverified attempts. It **does not count a mining attempt as success**, and a run can pass admission/sensor acceptance with zero wood collected. No test world items are spawned. A separate survival automation test will be required before claiming successful wood gathering.
+The real-world CI harness now continues for 70 seconds after both bots are loaded. It reports the actual number of mining starts, exact server-confirmed target removals, correlated survival inventory gains, and unverified attempts. It **does not count a mining attempt as success**, and a run can pass admission/sensor acceptance with zero wood collected. No test world items are spawned. A first successful natural survival gathering test is recorded below, but broader repeatability and full survival automation remain open.
 
 ## Measured real-world checkpoint — 2026-11-04
 
@@ -54,7 +54,13 @@ Follow-up fixes are on this feature branch: a bounded per-bot blocked-step memor
 
 ### Next acceptance criteria
 
-1. Demonstrate a successful obstacle recovery with new server-observed movement, not just alternate planned waypoints.
-2. Prove a genuine survival log removal, drop pickup and inventory gain in the same real bot.
-3. Implement conservative vanilla-physics steps up/down, then upgrade the 3D planner from abstract route annotations to executed and reconciled movement.
-4. Only after the action bridge is reliable: individual needs, local social memory, offscreen abstraction and Android performance profiling.
+1. **Achieved in experimental runs:** two real bots moved via server-confirmed position updates, with successful one-block uphill/downhill landings.
+2. **First success:** three natural logs broken and three real wood inventory increments by EcoAI1 in a loaded survival world; repeat across different seeds and conditions.
+3. **Next:** independently verify the exact server item-to-inventory transfer, make pickup and exploration reliable across terrain, and keep task-specific failures bounded.
+4. **Later:** real crafting, food acquisition, individual social behavior, offscreen population abstraction, Android performance profiling.
+
+## First confirmed natural-world wood harvest — 2026-11-04
+
+[GitHub Actions run #41826770398](https://github.com/despairarc000/horizon-android/actions/runs/41826770398) tested two opt-in survival bots using a real Minecraft world and the game's normal server action rules. EcoAI1 located naturally generated dark-oak wood and achieved **three** server-confirmed block-to-air mutations, **three** real dropped log entities, **three** correlated **+1** wood inventory increments, and a final server-surveyed wood count of **3**. Both bots also showed meaningful server-authoritative movement. No creative inventory grant, synthetic item or teleported pickup was used. EcoAI0 did not collect wood in this run. This establishes one valid autonomous harvesting sequence, not sustained survival or all-seed reliability.
+
+Follow-up improvements include prioritizing connected pickup positions in the bounded terrain survey, preventing inaccessible tree mining, suppressing two-ledge exploration loops, and instrumenting Horizon's actual guest inventory transfer. **The latter instrumented implementation requires its own subsequent successful run before calling its new telemetry verified.**
