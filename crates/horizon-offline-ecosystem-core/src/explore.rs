@@ -2,7 +2,7 @@
 //! A transport packet is only an attempted move; authoritative position samples
 //! determine whether an attempted step made physical progress.
 //! No waypoints supplied by the user, no global map, no fake player movement.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap,VecDeque};
 use crate::local_path::first_ground_step;
 
 pub const MAX_VISITED_TILES: usize = 256;
@@ -15,6 +15,10 @@ const PROGRESS_SQUARED: f64 = 0.10 * 0.10;
 /// transition during unguided exploration. Explicit resource/pickup goals
 /// can override this preference. The single-edge memory is bounded.
 pub const VERTICAL_RETURN_TICKS:u64=120;
+/// A longer, bounded memory prevents alternating among two or more ledges,
+/// not just immediately reversing the last single transition.
+pub const VERTICAL_REVISIT_TICKS:u64=480;
+pub const MAX_RECENT_VERTICAL_STANDS:usize=12;
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 struct ConfirmedVerticalTransition {
     from:[i32;3],
@@ -24,6 +28,7 @@ struct ConfirmedVerticalTransition {
 #[derive(Debug,Clone,Default,PartialEq,Eq)]
 pub struct VerticalTransitionMemory {
     recent:Option<ConfirmedVerticalTransition>,
+    recently_visited:VecDeque<([i32;3],u64)>,
 }
 impl VerticalTransitionMemory {
     pub fn new()->Self{Self::default()}
@@ -39,7 +44,25 @@ impl VerticalTransitionMemory {
             self.recent=Some(ConfirmedVerticalTransition{
                 from,to,until_tick:tick.saturating_add(VERTICAL_RETURN_TICKS)
             });
+            self.recently_visited.retain(|(_,until)|*until>tick);
+            for stand in [from,to]{
+                self.recently_visited.retain(|(p,_)|*p!=stand);
+                if self.recently_visited.len()>=MAX_RECENT_VERTICAL_STANDS{
+                    self.recently_visited.pop_front();
+                }
+                self.recently_visited.push_back((
+                    stand,tick.saturating_add(VERTICAL_REVISIT_TICKS)
+                ));
+            }
         }
+    }
+    /// Other verified recent landing/launch surfaces, excluding the current
+    /// position. Only unguided exploration avoids them: a real resource,
+    /// pickup or emergency action may still legitimately backtrack.
+    pub fn recent_stands_to_avoid(&self,current:[i32;3],tick:u64)->Vec<[i32;3]>{
+        self.recently_visited.iter()
+            .filter(|(p,until)|*until>tick && *p!=current)
+            .map(|(p,_)|*p).collect()
     }
     /// The physical surface to avoid *only during exploration*, when the
     /// current authoritative standing cell is the last transition's goal.
@@ -202,6 +225,37 @@ mod tests {
         assert_eq!(m.avoid_immediate_return(b,220),None);
         m.observed_landing(b,a,221);
         assert_eq!(m.avoid_immediate_return(a,222),Some(b));
+    }
+    #[test]
+    fn multi_edge_vertical_cycles_are_temporarily_avoided(){
+        let a=[0,65,0];
+        let b=[1,64,0];
+        let c=[1,64,1];
+        let d=[2,65,1];
+        let mut memory=VerticalTransitionMemory::new();
+        memory.observed_landing(a,b,100);
+        memory.observed_landing(c,d,120);
+        let avoided=memory.recent_stands_to_avoid(d,121);
+        assert!(avoided.contains(&a));
+        assert!(avoided.contains(&b));
+        assert!(avoided.contains(&c));
+        assert!(!avoided.contains(&d));
+        assert!(memory.recent_stands_to_avoid(d,601).is_empty());
+    }
+    #[test]
+    fn vertical_history_is_bounded_to_recent_confirmed_physical_steps(){
+        let mut memory=VerticalTransitionMemory::new();
+        for i in 0..20{
+            let from=[i*3,64,0];
+            let to=[i*3+1,65,0];
+            memory.observed_landing(from,to,i as u64*10+1);
+        }
+        assert!(memory.recently_visited.len()<=MAX_RECENT_VERTICAL_STANDS);
+        // Invalid or out-of-order transitions never poison the history.
+        let before=memory.recent_stands_to_avoid([500,65,0],210);
+        memory.observed_landing([50,64,0],[52,65,0],211);
+        memory.observed_landing([500,64,0],[501,65,0],1);
+        assert_eq!(memory.recent_stands_to_avoid([500,65,0],210),before);
     }
     #[test]
     fn only_verified_cardinal_one_block_changes_create_reverse_avoidance(){
