@@ -71,3 +71,7 @@ This is still preliminary: the bot needs line-of-sight, 3D navigation and an act
 ## Bounded obstacle-aware ground routing
 
 The worker now receives a limited 7x7 set of standable tiles from server-loaded blocks. A tile must have a full-collision floor, two blocks of clearance and no water/lava. A bounded BFS in `ecosystem_core::local_path` chooses the first cardinal step toward a reachable log or dropped item. Unknown cells and impossible routes are rejected rather than crossed blindly. Horizon's full mob A* remains a useful future reference, but its mob-specific evaluators cannot be directly substituted for survival player actions without changing their collision assumptions. **Current pathing is ground-only**; jumps, stairs, slabs, swimming and genuine 3D terrain navigation remain unimplemented.
+
+## Memory-driven exploration replacing the fixed spawn loop
+
+Previous 40-second in-game testing confirmed zero mining attempts despite both bots being loaded. Their old exploration only followed four fixed offsets within ~one block of spawn, preventing meaningful discovery. The Rust `ExplorationMemory` now chooses reachable, previously unvisited, locally surveyed ground tiles; per-bot visited memory is bounded to 256 and tie-breaking is individual. Every movement still uses ordinary player packets, the authoritative block grid, and Horizon's server collision checks. The next CI run logs ground-tile and log counts, and periodic genuine positions, allowing measurable tests for movement beyond spawn. This still cannot climb cliffs or jump yet.

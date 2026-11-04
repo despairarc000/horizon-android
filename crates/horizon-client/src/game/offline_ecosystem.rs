@@ -18,6 +18,7 @@ use ecosystem_core::{
     navigation::TargetMemory,
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
+    explore::ExplorationMemory,
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -275,10 +276,16 @@ impl ExperimentalBots {
                 // and supplied a valid server-authoritative loaded position.
                 // It is stronger evidence than the worker simply spawning.
                 log::info!(
-                    "Offline ecosystem {}: first authoritative survey at {:.2},{:.2},{:.2}",
-                    sink.name,pos[0],pos[1],pos[2]
+                    "Offline ecosystem {}: first authoritative survey at {:.2},{:.2},{:.2} logs={} ground_tiles={}",
+                    sink.name,pos[0],pos[1],pos[2],logs.len(),ground.len()
                 );
                 sink.first_observation_logged=true;
+            }
+            if sent.is_ok() && self.survey_ticks%160==0 {
+                log::info!(
+                    "Offline ecosystem {}: exploration survey position {:.2},{:.2},{:.2} logs={} ground_tiles={} wood_inventory={}",
+                    sink.name,pos[0],pos[1],pos[2],logs.len(),ground.len(),wood_inventory
+                );
             }
         }
     }
@@ -292,8 +299,7 @@ fn run_local(
     watched_target:Arc<Mutex<Option<[i32;3]>>>,
 )->Result<(),String>{
     let mut player=LocalPlayer::join(pipe,name,2)?;
-    let mut origin:Option<[f64;2]>=None;
-    let mut waypoint=0usize;
+    let mut exploration=ExplorationMemory::new();
     let mut next_tick=Instant::now();
     let mut last_survey=None;
     // Last-known resource locations and failed-approach history belong to
@@ -307,7 +313,6 @@ fn run_local(
     let mut mining_sequence=100i32;
     let mut mine_cooldown=0u64;
     let mut food_cooldown=0u64;
-    const OFFSETS:[[f64;2];4]=[[0.8,0.0],[0.8,0.8],[0.0,0.8],[0.0,0.0]];
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
         for mut received in rx.try_iter(){
@@ -354,7 +359,6 @@ fn run_local(
         next_tick=Instant::now()+Duration::from_millis(50);
         let Some((survey,observed_at))=last_survey.as_ref() else {continue;};
         if observed_at.elapsed()>Duration::from_secs(2){continue;}
-        let spawn=*origin.get_or_insert([survey.position[0],survey.position[2]]);
         // A START is a request, not proof of mining success. A block can
         // disappear due to another player or a world change; the observation
         // only establishes that it is no longer present.
@@ -451,9 +455,17 @@ fn run_local(
             _=>{},
         }
         if exploring {
-            let offset=OFFSETS[(waypoint+index)%OFFSETS.len()];
-            if player.steer_xz([spawn[0]+offset[0],spawn[1]+offset[1]])==Ok(true){
-                waypoint=(waypoint+1)%OFFSETS.len();
+            let at=[
+                survey.position[0].floor() as i32,
+                survey.position[2].floor() as i32,
+            ];
+            if let Some(step)=exploration.choose_next(
+                at,&survey.ground,survey.tick,index as u32
+            ){
+                // This can lead well beyond the initial spawn, but only
+                // through the level-ground cells currently observed.
+                let target=[f64::from(step[0])+0.5,f64::from(step[1])+0.5];
+                let _=player.steer_xz(target);
             }
         }
         player.client_tick_end()?;
