@@ -19,7 +19,7 @@ use ecosystem_core::{
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
     explore::ExplorationMemory,
-    terrain_path::{first_terrain_step,RouteMotion,RouteStep},
+    terrain_path::{first_terrain_step,RouteMotion,RouteStep,StepDownController},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -455,6 +455,10 @@ fn run_local(
     let mut mining_sequence=100i32;
     let mut mine_cooldown=0u64;
     let mut food_cooldown=0u64;
+    // A real one-block falling request may span multiple client ticks.
+    // Only server-authoritative positions can confirm the final landing.
+    let mut descent:Option<(StepDownController,u64)>=None;
+    let mut descent_cooldown=0u64;
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
         for mut received in rx.try_iter(){
@@ -492,8 +496,9 @@ fn run_local(
                     _=>{},
                 }
             }
+            if harvest.is_none() {descent=None;}
             // Only consider logs on approximately the same level while
-            // vertical navigation and obstacle handling remain unavailable.
+            // full vertical navigation remains unavailable.
             // This also prevents getting stuck forever targeting tall trees.
             let mut walkable_height:Vec<[i32;3]>=received.logs.iter().copied()
                 .filter(|p|(received.position[1]-f64::from(p[1])).abs()<1.5)
@@ -558,6 +563,46 @@ fn run_local(
             player.client_tick_end()?;
             continue;
         }
+        if let Some((controller,started))=descent.as_mut(){
+            let target=controller.destination;
+            let reached=(survey.position[1]-f64::from(target[1])).abs()<0.12
+                && (survey.position[0]-f64::from(target[0])-0.5).abs()<0.65
+                && (survey.position[2]-f64::from(target[2])-0.5).abs()<0.65;
+            if reached {
+                log::info!(
+                    "Offline ecosystem {name}: server-authoritative downhill landing at {target:?}"
+                );
+                descent=None;
+            } else if survey.tick.saturating_sub(*started)>80 {
+                log::info!(
+                    "Offline ecosystem {name}: downhill motion unconfirmed; backing off from {target:?}"
+                );
+                descent=None;
+                descent_cooldown=survey.tick.saturating_add(160);
+            } else {
+                // Never mistake local optimistic packet position for a real
+                // landing. The next server survey overwrites local position.
+                let estimated=player.state.position.unwrap_or(survey.position);
+                if let Some(movement)=controller.next(estimated) {
+                    let result=if movement.dy<0.0 {
+                        player.descend_delta(
+                            movement.dx,movement.dy,movement.dz,movement.on_ground
+                        )
+                    } else {
+                        player.walk_delta(movement.dx,movement.dz)
+                    };
+                    if let Err(error)=result {
+                        log::info!(
+                            "Offline ecosystem {name}: downhill packet rejected: {error}"
+                        );
+                        descent=None;
+                        descent_cooldown=survey.tick.saturating_add(160);
+                    }
+                }
+                player.client_tick_end()?;
+                continue;
+            }
+        }
         if let Some(probe)=harvest.as_ref().filter(|h|h.block_removed()){
             // Travel toward the actual local dropped entity, never a guessed
             // block center. No flight, teleport, or extra inventory allowed.
@@ -580,11 +625,24 @@ fn run_local(
                                             f64::from(route.at[2])+0.5];
                                 steering.steer(&mut player,target);
                             },
-                            RouteMotion::StepDown|RouteMotion::JumpUp=>{
+                            RouteMotion::StepDown=>{
+                                if survey.tick>=descent_cooldown {
+                                    if let Some(controller)=
+                                        StepDownController::begin(survey.position,route.at)
+                                    {
+                                        log::info!(
+                                            "Offline ecosystem {name}: attempting normal downhill movement to verified surface {:?}",
+                                            route.at
+                                        );
+                                        descent=Some((controller,survey.tick));
+                                    }
+                                }
+                            },
+                            RouteMotion::JumpUp=>{
                                 if survey.tick%160==0 {
                                     log::info!(
-                                        "Offline ecosystem {name}: pickup awaits physics-controlled {:?} to verified surface {:?}",
-                                        route.motion,route.at
+                                        "Offline ecosystem {name}: pickup awaits a normal jump to verified surface {:?}",
+                                        route.at
                                     );
                                 }
                             },
