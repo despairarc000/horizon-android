@@ -91,7 +91,7 @@ impl TargetMemory {
             // avoid subtraction overflow at world coordinate extremes.
             let in_survey = (i64::from(p[0]) - i64::from(center[0])).abs() <= 6
                 && (i64::from(p[2]) - i64::from(center[2])).abs() <= 6
-                && (-1..=2).contains(&(p[1] - center[1]));
+                && (-1..=2).contains(&(i64::from(p[1]) - i64::from(center[1])));
             if tick.saturating_sub(remembered.tick) > MEMORY_TICKS
                 || (in_survey && !visible.contains(&p))
             {
