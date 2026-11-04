@@ -123,6 +123,45 @@ def steering_report(lines: list[str]) -> dict[str, dict[str,int|str|bool]]:
     return latest
 
 
+MINING_START = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server mining START "
+    r"target=\[[^\]]+\] in_reach=(true|false) "
+    r"spawn_protected=(true|false) inside_border=(true|false) spectator=(true|false)"
+)
+MINING_STOP = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server mining STOP "
+    r".*?decision=(Break|Gone|Other|Delay\(\d+\)) "
+)
+
+
+def server_mining_report(lines: list[str]) -> dict[str,int]:
+    """Log observations, not proof of a successful block destruction."""
+    result = {
+        "server_starts_observed": 0,
+        "starts_out_of_reach": 0,
+        "starts_spawn_protected": 0,
+        "starts_outside_border": 0,
+        "stops_observed": 0,
+        "stops_break": 0,
+        "stops_delay": 0,
+        "stops_other": 0,
+        "stops_gone": 0,
+    }
+    for line in lines:
+        if start := MINING_START.search(line):
+            _, reach, spawn, border, _ = start.groups()
+            result["server_starts_observed"] += 1
+            result["starts_out_of_reach"] += int(reach == "false")
+            result["starts_spawn_protected"] += int(spawn == "true")
+            result["starts_outside_border"] += int(border == "false")
+        if stop := MINING_STOP.search(line):
+            result["stops_observed"] += 1
+            kind = stop.group(2)
+            key = "stops_delay" if kind.startswith("Delay") else "stops_" + kind.lower()
+            result[key] += 1
+    return result
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -210,6 +249,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Observed {len(lines)} console lines in {time.monotonic()-started:.1f}s")
     print(f"Terrain elevation and authoritative movement: {terrain_report(lines)}")
     print(f"Bot steering transport diagnostics (not confirmed motion): {steering_report(lines)}")
+    print(f"Server-side survival mining decisions: {server_mining_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
