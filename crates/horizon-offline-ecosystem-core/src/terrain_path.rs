@@ -207,6 +207,83 @@ impl StepDownController {
     }
 }
 
+/// A bounded physical jump packet. It is only a client request; the
+/// server remains responsible for collision, jumping, and fall damage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JumpMotion {
+    pub dx:f64,
+    pub dy:f64,
+    pub dz:f64,
+    pub on_ground:bool,
+}
+
+/// Execute one adjacent one-block uphill route over normal 20-Hz ticks.
+/// A jump begins with vertical velocity ~0.42; subsequent ticks use
+/// vanilla-like gravity and drag. Horizontal progress waits until the
+/// player's feet clear the adjacent higher block.
+#[derive(Clone, Debug)]
+pub struct StepUpController {
+    pub destination:[i32;3],
+    vertical_speed:f64,
+    began:bool,
+    start_y:i32,
+}
+impl StepUpController {
+    pub fn begin(at:[f64;3],destination:[i32;3])->Option<Self>{
+        if !at.iter().all(|x|x.is_finite()){return None;}
+        let from=[at[0].floor() as i32,at[1].floor() as i32,at[2].floor() as i32];
+        let dx=(i64::from(destination[0])-i64::from(from[0])).abs();
+        let dz=(i64::from(destination[2])-i64::from(from[2])).abs();
+        if dx+dz!=1 || i64::from(destination[1])-i64::from(from[1])!=1 {
+            return None;
+        }
+        Some(Self{destination,vertical_speed:0.0,began:false,start_y:from[1]})
+    }
+    /// None means the attempted arc was invalid or did not land, NOT a
+    /// successful jump. The authoritative server survey decides success.
+    pub fn next(&mut self,at:[f64;3])->Option<JumpMotion>{
+        if !at.iter().all(|x|x.is_finite()){return None;}
+        let landing_y=f64::from(self.destination[1]);
+        if at[1]<f64::from(self.start_y)-0.10 || at[1]>landing_y+0.75{
+            return None;
+        }
+        let tx=f64::from(self.destination[0])+0.5;
+        let tz=f64::from(self.destination[2])+0.5;
+        let x=tx-at[0];
+        let z=tz-at[2];
+        let distance=x.hypot(z);
+        if !distance.is_finite()||distance>1.8{return None;}
+        if !self.began{
+            self.began=true;
+            self.vertical_speed=0.42;
+        }else{
+            self.vertical_speed=(self.vertical_speed-0.08)*0.98;
+        }
+        let predicted=at[1]+self.vertical_speed;
+        let clear=predicted>=landing_y+0.001;
+        // No horizontal clipping into the higher support block before
+        // the feet have gained a full block of altitude.
+        let step=if clear{distance.min(0.24)}else{0.0};
+        let dx=if distance>1e-8{x/distance*step}else{0.0};
+        let dz=if distance>1e-8{z/distance*step}else{0.0};
+        let close=distance<=0.26;
+        if self.vertical_speed<0.0 && predicted<=landing_y+0.03 && close{
+            return Some(JumpMotion{
+                dx,dz,dy:landing_y-at[1],on_ground:true,
+            });
+        }
+        // Don't fake a landing if the arc missed the top of the higher
+        // block. A real server position still determines what happened.
+        if self.vertical_speed<0.0 && predicted<landing_y-0.03 {
+            return None;
+        }
+        Some(JumpMotion{
+            dx,dz,dy:self.vertical_speed.clamp(-0.30,0.42),
+            on_ground:false,
+        })
+    }
+}
+
 /// Confirmed safe standing cells close enough to attempt harvesting a log.
 /// The action itself must independently pass Horizon's raycast and reach tests.
 pub fn adjacent_terrain_goals(log:[i32;3],stands:&[[i32;3]])->Vec<[i32;3]>{
@@ -222,6 +299,46 @@ pub fn adjacent_terrain_goals(log:[i32;3],stands:&[[i32;3]])->Vec<[i32;3]>{
 mod tests{
     use super::*;
 
+    #[test]
+    fn uphill_jump_is_only_one_cardinal_block(){
+        assert!(StepUpController::begin([0.5,64.0,0.5],[1,65,0]).is_some());
+        assert!(StepUpController::begin([0.5,64.0,0.5],[1,66,0]).is_none());
+        assert!(StepUpController::begin([0.5,64.0,0.5],[1,65,1]).is_none());
+        assert!(StepUpController::begin([0.5,64.0,0.5],[0,63,1]).is_none());
+        assert!(StepUpController::begin([f64::NAN,64.0,0.5],[1,65,0]).is_none());
+    }
+    #[test]
+    fn uphill_arc_clears_support_then_claims_ground(){
+        let mut jump=StepUpController::begin([0.5,64.0,0.5],[1,65,0]).unwrap();
+        let mut at=[0.5,64.0,0.5];
+        let mut peak=at[1];
+        let mut landed=false;
+        for _ in 0..18{
+            let Some(m)=jump.next(at) else{break;};
+            assert!(m.dx.hypot(m.dz)<=0.240001);
+            assert!((-0.300001..=0.420001).contains(&m.dy));
+            if at[1]+m.dy<65.0-1e-6{
+                assert_eq!(m.dx,0.0,"can't clip horizontally through a wall");
+            }
+            at=[at[0]+m.dx,at[1]+m.dy,at[2]+m.dz];
+            peak=peak.max(at[1]);
+            if m.on_ground{
+                landed=true;
+                break;
+            }
+        }
+        assert!(peak>65.1);
+        assert!(landed);
+        assert!((at[0]-1.5).abs()<0.27);
+        assert!((at[1]-65.0).abs()<1e-8);
+    }
+    #[test]
+    fn impossible_uphill_jump_does_not_claim_a_success(){
+        let mut j=StepUpController::begin([0.5,64.0,0.5],[1,65,0]).unwrap();
+        assert!(j.next([f64::INFINITY,64.0,0.5]).is_none());
+        assert!(j.next([10.5,64.0,0.5]).is_none());
+        assert!(j.next([0.5,60.0,0.5]).is_none());
+    }
     #[test]
     fn descent_is_cardinal_and_exactly_one_block(){
         assert!(StepDownController::begin([0.5,65.,0.5],[1,64,0]).is_some());
