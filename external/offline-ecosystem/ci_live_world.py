@@ -3,8 +3,9 @@
 
 Only declares success if the server actually logs each bot into the same
 private world AND emits its first authoritative loaded-world survey.
-Stops the controlled test process after that milestone; this does not test
-autosave, Android rendering, harvesting, or long-term survival.
+Optionally samples a bounded period after both bots become loaded, to report
+real harvesting attempts or pickups. This does not prove long-term survival
+or invent test resources.
 """
 from __future__ import annotations
 
@@ -50,8 +51,17 @@ def check_events(lines: list[str]) -> tuple[bool, str]:
     )
 
 
+def harvest_report(lines: list[str]) -> dict[str,int]:
+    return {
+        "mining_attempts":sum("mining attempt started at" in line for line in lines),
+        "exact_blocks_removed":sum("exact server block observation confirmed" in line for line in lines),
+        "correlated_wood_pickups":sum("correlated log removal and real inventory gain" in line for line in lines),
+        "unverified_harvests":sum("mining unverified" in line for line in lines),
+    }
+
+
 def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
-        timeout_seconds: float) -> int:
+        timeout_seconds: float, post_ready_seconds: float = 0) -> int:
     scratch.mkdir(parents=True, exist_ok=True)
     console = scratch / "console.log"
     command = [
@@ -89,9 +99,14 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
         reader.start()
 
         reached = False
+        ready_at: float | None = None
         explanation = "deadline exceeded"
+        held_for_requested_period = post_ready_seconds == 0
         try:
             while time.monotonic() - started < timeout_seconds:
+                if ready_at is not None and time.monotonic() - ready_at >= post_ready_seconds:
+                    held_for_requested_period = True
+                    break
                 try:
                     lines.append(received.get(timeout=0.25))
                 except queue.Empty:
@@ -99,12 +114,16 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
                         break
                     continue
                 reached, explanation = check_events(lines)
-                if reached or "not_whitelisted" in explanation:
+                if "not_whitelisted" in explanation:
                     break
+                if reached and ready_at is None:
+                    ready_at = time.monotonic()
             # Drain all already-received lines for accurate failure reporting.
             while not received.empty():
                 lines.append(received.get_nowait())
             reached, explanation = check_events(lines)
+            if ready_at is not None and time.monotonic()-ready_at >= post_ready_seconds:
+                held_for_requested_period = True
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -117,9 +136,10 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
 
     print(f"Headless integrated-world acceptance: {explanation}")
     print(f"Observed {len(lines)} console lines in {time.monotonic()-started:.1f}s")
-    if not reached:
+    print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
+    if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
-    return 0 if reached else 1
+    return 0 if reached and held_for_requested_period else 1
 
 
 def main() -> int:
@@ -128,12 +148,18 @@ def main() -> int:
     parser.add_argument("--resources", type=pathlib.Path, required=True)
     parser.add_argument("--scratch", type=pathlib.Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=140)
+    parser.add_argument("--post-ready-seconds", type=float, default=0)
     args = parser.parse_args()
     if not args.binary.is_file() or not args.resources.is_dir():
         parser.error("compiled game binary and prepared resources are required")
     if not (1 <= args.timeout_seconds <= 300):
         parser.error("timeout must be between 1 and 300 seconds")
-    return run(args.binary, args.resources, args.scratch, args.timeout_seconds)
+    if not (0 <= args.post_ready_seconds <= 120):
+        parser.error("post-ready period must be between 0 and 120 seconds")
+    if args.post_ready_seconds >= args.timeout_seconds:
+        parser.error("post-ready period must be shorter than deadline")
+    return run(args.binary, args.resources, args.scratch,
+               args.timeout_seconds, args.post_ready_seconds)
 
 
 if __name__ == "__main__":

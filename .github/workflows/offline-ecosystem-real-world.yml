@@ -64,7 +64,8 @@ jobs:
             --binary target/debug/horizon-client \
             --resources .local/horizon-client/26.3 \
             --scratch .local/ecosystem-headless \
-            --timeout-seconds 140
+            --timeout-seconds 140 \
+            --post-ready-seconds 40
       - name: Check resource boundary
         if: always()
         run: |

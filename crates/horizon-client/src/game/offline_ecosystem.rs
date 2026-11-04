@@ -285,7 +285,7 @@ fn run_local(
                         if let Ok(mut target)=watched_target.lock(){*target=None;}
                     },
                     HarvestStatus::UnverifiedTimeout=>{
-                        log::debug!(
+                        log::info!(
                             "Offline ecosystem {name}: mining unverified (no correlated drop pickup)"
                         );
                         target_memory.avoid(probe.target,received.tick);
@@ -324,7 +324,7 @@ fn run_local(
                 mining_sequence+=1;
                 mining=None;
                 attempts=None;
-                log::debug!("Offline ecosystem {name}: exact server block observation confirmed target no longer log");
+                log::info!("Offline ecosystem {name}: exact server block observation confirmed target no longer log");
             } else if survey.tick.saturating_sub(started)>=85{
                 player.finish_mining(target,1,mining_sequence)?;
                 mining_sequence+=1;

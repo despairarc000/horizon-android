@@ -41,3 +41,7 @@ Set it in the process environment **before launching a locally built Horizon gam
 On normal public GitHub CI the Horizon LAN test is **compiled**, but runtime gameplay tests are skipped if private Minecraft resources are absent. Passing CI therefore does not establish that the experimental player successfully joins or moves in a real game world.
 
 The current configuration is a desktop/developer environment variable; the Android launcher does not yet expose a toggle. Real Android build and device testing remain unverified.
+
+## Harvesting diagnostic after live acceptance
+
+The real-world CI harness now continues for 40 seconds after both bots are loaded. It reports the actual number of mining starts, exact server-confirmed target removals, correlated survival inventory gains, and unverified attempts. It **does not count a mining attempt as success**, and a run can pass admission/sensor acceptance with zero wood collected. No test world items are spawned. A separate survival automation test will be required before claiming successful wood gathering.
