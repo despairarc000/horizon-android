@@ -73,6 +73,9 @@ jobs:
       # import, and try uphill exploration in the pinned natural world.
       # Run a deterministic stone-ledge survival jump test in the real
       # collision-aware in-memory LAN Hub before the natural-world probe.
+      # Exercise genuine multi-bot wood scavenging: a surviving item
+      # can be pursued after its original harvest record expires, with
+      # only connected server-verified terrain and actual inventory credit.
       # Prefer log targets whose expected drops have an observed
       # physical pickup stand, and recover when a real drop stays out of
       # reach across eight successive server terrain surveys. This is
