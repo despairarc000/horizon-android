@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ci_live_world import (
     check_events, terrain_report, steering_report, server_mining_report,
-    server_destroy_report, item_pickup_report, downhill_report, uphill_report, confirm_observed_exploration,
+    server_destroy_report, item_pickup_report, downhill_report, uphill_report, blocked_pickup_report, confirm_observed_exploration,
 )
 
 def login(name, eid):
@@ -146,6 +146,16 @@ class UphillMotionTests(unittest.TestCase):
         self.assertEqual(counts["rejected_uphill_packets"],1)
         self.assertEqual(counts["invalid_uphill_arcs"],1)
         self.assertEqual(uphill_report(lines[:2])["server_confirmed_uphill_landings"],0)
+
+class BlockedLootRecoveryTests(unittest.TestCase):
+    def test_inaccessible_drops_never_count_as_harvests(self):
+        lines=[
+            "Offline ecosystem EcoAI0: observed drop still inaccessible after 8 server surveys; no pickup or inventory credit for [2, 64, 3]",
+            "Offline ecosystem EcoAI1: exact server block observation confirmed target no longer log at [2, 64, 3]",
+            "Offline ecosystem EcoAI1: observed drop still inaccessible after 8 server surveys; no pickup or inventory credit for [1, 65, 2]",
+        ]
+        self.assertEqual(blocked_pickup_report(lines)["blocked_drop_releases"],2)
+        self.assertEqual(blocked_pickup_report([])["blocked_drop_releases"],0)
 
 class TerrainProbeTests(unittest.TestCase):
     def test_reports_validated_elevations_and_actual_displacement(self):
