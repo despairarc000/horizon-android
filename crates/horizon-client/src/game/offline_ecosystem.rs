@@ -142,26 +142,63 @@ fn decide(survey: &Survey, index: usize) -> Intent {
     })
 }
 
-/// Deterministic, memory-bounded proximity scan. All predicate answers must
-/// come from loaded, authoritative server blocks; never infer distant terrain.
-fn log_candidates<F:FnMut([i32;3])->bool>(
-    center:[i32;3],mut is_log:F
-)->Vec<[i32;3]>{
+/// Deterministic, memory-bounded scan. Query only loaded authoritative
+/// blocks. Rank potential accessibility BEFORE taking the nearest 32;
+/// otherwise dense inaccessible trunks can hide nearby collectible wood.
+fn ranked_log_candidates<F,G>(
+    center:[i32;3],mut is_log:F,mut access_rank:G
+)->Vec<[i32;3]>
+where F:FnMut([i32;3])->bool,G:FnMut([i32;3])->u8 {
     let mut found=Vec::new();
     for dx in -6i32..=6 {
         for dy in -1i32..=2 {
             for dz in -6i32..=6 {
-                let p=[center[0]+dx,center[1]+dy,center[2]+dz];
+                let (Some(x),Some(y),Some(z))=(
+                    center[0].checked_add(dx),
+                    center[1].checked_add(dy),
+                    center[2].checked_add(dz),
+                )else{continue;};
+                let p=[x,y,z];
                 if is_log(p){
-                    let d=dx.abs()+dy.abs()+dz.abs();
-                    found.push((d,p));
+                    let distance=dx.abs()+dy.abs()+dz.abs();
+                    found.push((access_rank(p),distance,p));
                 }
             }
         }
     }
-    found.sort_by_key(|(distance,p)|(*distance,p[0],p[1],p[2]));
+    found.sort_by_key(|(rank,distance,p)|(*rank,*distance,p[0],p[1],p[2]));
     found.truncate(32);
-    found.into_iter().map(|(_,p)|p).collect()
+    found.into_iter().map(|(_,_,p)|p).collect()
+}
+/// Preserve deterministic nearest-first scanning in legacy isolated tests.
+#[cfg(test)]
+fn log_candidates<F:FnMut([i32;3])->bool>(
+    center:[i32;3],is_log:F
+)->Vec<[i32;3]>{
+    ranked_log_candidates(center,is_log,|_|0)
+}
+
+/// A *potential* settled log drop is one or two blocks above a supported
+/// player stance, or at the same level. Only already graph-connected
+/// server-verified terrain counts. This is a cheap filter, NOT movement,
+/// actual item spawn geometry, or proof that its pickup will succeed.
+fn has_connected_pickup_stand(
+    connected:&std::collections::BTreeSet<[i32;3]>,log:[i32;3]
+)->bool{
+    for down in 0..=2{
+        for dx in -1..=1{
+            for dz in -1..=1{
+                if let (Some(x),Some(y),Some(z))=(
+                    log[0].checked_add(dx),
+                    log[1].checked_sub(down),
+                    log[2].checked_add(dz)
+                ){
+                    if connected.contains(&[x,y,z]){return true;}
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Inventory is the server's 36-slot survival inventory, hotbar first.
@@ -626,10 +663,23 @@ impl ExperimentalBots {
             let pos=guest.position;
             if !pos.iter().all(|x|x.is_finite()){continue;}
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
-            let logs=log_candidates(center,|here|is_log(here)==Some(true));
+            let terrain=terrain_candidates(center,&mut is_standable);
+            let connected:std::collections::BTreeSet<_>=
+                ecosystem_core::terrain_path::connected_terrain_stands(
+                    center,&terrain
+                ).into_iter().collect();
+            // Favor genuinely connected, loaded-world pickup stances over
+            // provisional post-break clearances, then inaccessible logs.
+            // The worker repeats full route checks before taking any action.
+            let logs=ranked_log_candidates(
+                center,|here|is_log(here)==Some(true),|here|{
+                    if has_connected_pickup_stand(&connected,here){0}
+                    else if clearable_log(here){1}
+                    else{2}
+                }
+            );
             let clearable_stands:Vec<_>=logs.iter().copied()
                 .filter(|&pos|clearable_log(pos)).collect();
-            let terrain=terrain_candidates(center,&mut is_standable);
             let ground:Vec<[i32;2]>=terrain.iter()
                 .filter(|p|p[1]==center[1])
                 .map(|p|[p[0],p[2]]).collect();
@@ -1753,6 +1803,32 @@ mod tests{
         let mut low=[[0,63,0]];
         prefer_pickup_height(&mut low,[0.5,64.0,0.5]);
         assert_eq!(low,[[0,63,0]]);
+    }
+    #[test]
+    fn dense_inaccessible_log_cluster_cannot_hide_accessible_log(){
+        let origin=[0,64,0];
+        let accessible=[6,64,6];
+        let all=ranked_log_candidates(origin,|p|
+            (p[1]==64 && p[0].abs()<=4 && p[2].abs()<=4)
+            || p==accessible,
+            |p|if p==accessible{0}else{2}
+        );
+        assert_eq!(all.len(),32);
+        assert_eq!(all[0],accessible);
+        assert!(all.contains(&accessible));
+        assert!(all.iter().all(|p|
+            p[0].abs()<=6 && p[2].abs()<=6 && (63..=66).contains(&p[1])
+        ));
+    }
+    #[test]
+    fn candidate_pickup_rank_requires_actual_connected_standing_cell(){
+        let connected:std::collections::BTreeSet<_>=
+            [[0,64,0],[1,64,0]].into_iter().collect();
+        assert!(has_connected_pickup_stand(&connected,[2,64,0]));
+        assert!(has_connected_pickup_stand(&connected,[2,66,0]));
+        assert!(!has_connected_pickup_stand(&connected,[2,67,0]));
+        assert!(!has_connected_pickup_stand(&connected,[6,64,0]));
+        assert!(!has_connected_pickup_stand(&connected,[i32::MAX,64,0]));
     }
     #[test]fn local_log_survey_is_bounded_and_nearest_first(){
         let origin=[0,64,0];
