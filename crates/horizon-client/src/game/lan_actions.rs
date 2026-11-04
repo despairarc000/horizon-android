@@ -4366,9 +4366,12 @@ impl Game<'_> {
             let tracked_wood=kind.ends_with("_log")||kind.ends_with("_stem");
             let before = stack.count;
             let thrower = self.dropped[i].thrower;
-            let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
-            match rest {
-                None => {
+            // Preserve the outer Option: None means the guest actor could
+            // not be entered, NOT that the entire item stack was accepted.
+            // Flattening these would falsely remove loot and report a pickup.
+            let transfer = self.as_guest(host, conn, |g| g.give(stack));
+            match transfer {
+                Some(None) => {
                     let item = self.remove_dropped(i);
                     if let Some(thrower) = thrower {
                         self.as_guest(host, conn, |g| {
@@ -4386,7 +4389,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                Some(rest) if rest.count < before => {
+                Some(Some(rest)) if rest.count < before => {
                     self.guest_pickup(host, id, self.dropped[i].clone());
                     self.dropped[i].stack = rest;
                     if let Some(thrower) = thrower {
@@ -4406,7 +4409,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                Some(_) => {}
+                _ => {} // Inventory full or guest actor unavailable.
             }
         }
         // Entity.take: the clients play the pickup sound themselves
