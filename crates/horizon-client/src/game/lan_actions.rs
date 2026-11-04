@@ -4146,9 +4146,36 @@ impl Game<'_> {
     /// ServerPlayerGameMode.destroyBlock for a guest, its crack cleared for the others
     /// (`destroyBlockProgress(id, pos, -1)`).
     fn guest_destroy(&mut self, host: &mut LanHost, conn: u32, pos: [i32; 3]) {
-        self.as_guest(host, conn, |g| {
-            let _ = g.break_block(pos);
-        });
+        // Only the opt-in local ecosystem experiment gets block outcome
+        // telemetry. The usual server action and game rules remain intact.
+        let diagnostic_name = if host.experimental_bots.is_some() {
+            host.hub.guest(conn).and_then(|guest| {
+                guest.name.starts_with("EcoAI").then(|| guest.name.clone())
+            })
+        } else {
+            None
+        };
+        let before = diagnostic_name.as_ref().map(|_| self.world.block(
+            pos[0], pos[1], pos[2]
+        ));
+        // Do not discard a failure from the actual survival destruction
+        // path. In particular, STOP=Break alone proves no world mutation.
+        let outcome = self.as_guest(host, conn, |g| g.break_block(pos));
+        if let Some(name) = diagnostic_name {
+            let after = self.world.block(pos[0], pos[1], pos[2]);
+            let before_state = before.expect("diagnostic state captured");
+            let post_block = self.res.facts().get(after);
+            let result = match &outcome {
+                Some(Ok(())) => "ok".to_owned(),
+                Some(Err(error)) => format!("error:{error}"),
+                None => "actor-unavailable".to_owned(),
+            };
+            log::info!(
+                "Offline ecosystem {name}: server destroy result={result} target={pos:?} world_changed={} after_block={} after_air={}",
+                before_state != after, post_block.name,
+                self.res.facts().is_air(after)
+            );
+        }
         self.guest_crack_gone(host, conn, pos);
     }
 
