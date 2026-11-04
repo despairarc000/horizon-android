@@ -65,6 +65,15 @@ fn in_memory_join_teleport_loaded_chunk_move_and_use() {
         assert!((m.z-1.6).abs()<1e-5);
         let (id,body)=s.recv().unwrap();
         assert!(matches!(play::Serverbound::decode(id,&body).unwrap(),play::Serverbound::UseItemOn(_)));
+        let (id,body)=s.recv().unwrap();
+        let play::Serverbound::PlayerAction(start)=play::Serverbound::decode(id,&body).unwrap() else{panic!("mining start")};
+        assert_eq!((start.action,start.sequence),(0,12));
+        let (id,body)=s.recv().unwrap();
+        let play::Serverbound::PlayerAction(stop)=play::Serverbound::decode(id,&body).unwrap() else{panic!("mining stop")};
+        assert_eq!((stop.action,stop.sequence),(3,13));
+        let (id,body)=s.recv().unwrap();
+        let play::Serverbound::Attack(attack)=play::Serverbound::decode(id,&body).unwrap() else{panic!("attack")};
+        assert_eq!(attack.id,101);
     });
     let mut bot=LocalPlayer::join(client,"EcoBot0",2).unwrap();
     assert_eq!(bot.name(),"EcoBot0");
@@ -78,6 +87,11 @@ fn in_memory_join_teleport_loaded_chunk_move_and_use() {
     assert!(bot.walk_delta(f64::NAN,0.).is_err());
     bot.walk_delta(0.2,0.1).unwrap();
     bot.use_item_on([1,64,1],1,1).unwrap();
+    assert!(bot.begin_mining([1,64,1],6,11).is_err());
+    assert!(bot.attack_entity(0).is_err());
+    bot.begin_mining([1,64,1],1,12).unwrap();
+    bot.finish_mining([1,64,1],1,13).unwrap();
+    bot.attack_entity(101).unwrap();
     srv.join().unwrap();
 }
 

@@ -270,6 +270,30 @@ impl LocalPlayer {
         self.walk_delta(dx/dist*step,dz/dist*step)?;
         Ok(false)
     }
+    /// Start or stop mining using normal Minecraft player packets. Vanilla
+    /// tool speed and mining time must be respected by a future task planner.
+    fn mining(&mut self,kind:i32,pos:[i32;3],face:u8,sequence:i32)->Result<(),String>{
+        if !self.state.ready{return Err("player not ready".into());}
+        if face>5||sequence<=0{return Err("invalid mining action".into());}
+        self.send(play::Serverbound::PlayerAction(play::PlayerAction{
+            action:kind,pos,direction:face,sequence,
+        }))
+    }
+    pub fn begin_mining(&mut self,pos:[i32;3],face:u8,sequence:i32)->Result<(),String>{
+        self.mining(0,pos,face,sequence)
+    }
+    pub fn abort_mining(&mut self,pos:[i32;3],face:u8,sequence:i32)->Result<(),String>{
+        self.mining(2,pos,face,sequence)
+    }
+    pub fn finish_mining(&mut self,pos:[i32;3],face:u8,sequence:i32)->Result<(),String>{
+        self.mining(3,pos,face,sequence)
+    }
+    /// The server verifies attack range, damage and cooldown. No local
+    /// assumption of a kill or successful hit is allowed.
+    pub fn attack_entity(&mut self,id:i32)->Result<(),String>{
+        if !self.state.ready||id<=0{return Err("invalid attack".into());}
+        self.send(play::Serverbound::Attack(play::Attack{id}))
+    }
     /// Mark the end of one client simulation tick. Vanilla sends this after
     /// its tick to let the server safely schedule movement and interactions.
     pub fn client_tick_end(&mut self)->Result<(),String>{
