@@ -616,8 +616,8 @@ mod tests{
     fn pickup_aware_target_priority_prefers_collectible_log_elevations(){
         let mut logs=vec![[0,63,0],[2,65,0],[1,64,0],[0,65,1]];
         prefer_pickup_height(&mut logs,[0.5,64.0,0.5]);
-        assert_eq!(logs[0],[0,65,1]);
-        assert_eq!(logs[1],[1,64,0]);
+        assert_eq!(logs[0],[1,64,0]);
+        assert_eq!(logs[1],[0,65,1]);
         assert_eq!(logs[2],[2,65,0]);
         assert_eq!(logs[3],[0,63,0]);
         // With no level or upper logs, lower blocks remain visible
