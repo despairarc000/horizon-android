@@ -7,7 +7,7 @@
 //! survival jump/fall physics and validate its progress with server surveys.
 use std::collections::{BTreeMap,BTreeSet,VecDeque};
 
-pub const MAX_KNOWN_STANDS:usize=343;
+pub const MAX_KNOWN_STANDS:usize=512;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RouteMotion { Walk, StepDown, JumpUp }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,6 +22,21 @@ pub struct RouteStep {
 /// This is an abstract route, not proof that physical movement is possible.
 pub fn first_terrain_step(
     start:[i32;3], goals:&[[i32;3]], confirmed_stands:&[[i32;3]]
+)->Option<RouteStep>{
+    route_step(start,goals,confirmed_stands,true)
+}
+
+/// A route that this experimental client can currently EXECUTE: level
+/// walking and one-block descents only. Don't select a shortcut that needs
+/// unimplemented jump physics and then stall on its first step.
+pub fn first_walk_down_step(
+    start:[i32;3], goals:&[[i32;3]], confirmed_stands:&[[i32;3]]
+)->Option<RouteStep>{
+    route_step(start,goals,confirmed_stands,false)
+}
+fn route_step(
+    start:[i32;3], goals:&[[i32;3]], confirmed_stands:&[[i32;3]],
+    allow_up:bool
 )->Option<RouteStep>{
     if confirmed_stands.is_empty() || confirmed_stands.len()>MAX_KNOWN_STANDS{
         return None;
@@ -43,6 +58,7 @@ pub fn first_terrain_step(
             // A player can jump only one block and can step or fall down
             // one block. No implicit multi-block climbing or jumping gaps.
             for dy in [0,-1,1]{
+                if dy>0 && !allow_up {continue;}
                 let Some(y)=p[1].checked_add(dy) else{continue;};
                 let to=[x,y,z];
                 if !safe.contains(&to)||seen.contains_key(&to){continue;}
@@ -220,6 +236,36 @@ mod tests{
         assert_eq!(first_terrain_step([0,64,0],&[[1,65,1]],&only_diagonal),None);
         let missing_middle=[[0,64,0],[2,64,0]];
         assert_eq!(first_terrain_step([0,64,0],&[[2,64,0]],&missing_middle),None);
+    }
+    #[test]
+    fn executable_route_detours_around_jump_shortcut(){
+        // An abstract route might select a climb; the bot cannot execute
+        // JumpUp yet, but it can walk around on a longer known flat route.
+        let stands=[
+            [0,65,0],[1,66,0],[0,65,1],
+            [1,65,1],[2,64,1],[2,64,0],
+        ];
+        let goal=[[2,64,1]];
+        let walkable=first_walk_down_step([0,65,0],&goal,&stands);
+        assert_eq!(walkable,Some(RouteStep{
+            at:[0,65,1],motion:RouteMotion::Walk,
+        }));
+        let impossible=[[0,65,0],[1,66,0],[2,66,0]];
+        assert_eq!(first_walk_down_step([0,65,0],&[[2,66,0]],&impossible),None);
+        assert_eq!(first_terrain_step([0,65,0],&[[2,66,0]],&impossible),
+            Some(RouteStep{at:[1,66,0],motion:RouteMotion::JumpUp}));
+    }
+    #[test]
+    fn expanded_bounded_survey_is_supported(){
+        let mut stands=Vec::new();
+        for x in -5..=5 {
+            for z in -5..=5 {
+                for y in 64..=66 {stands.push([x,y,z]);}
+            }
+        }
+        assert_eq!(stands.len(),363);
+        assert_eq!(first_walk_down_step([0,65,0],&[[5,65,5]],&stands),
+            Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
     }
     #[test]
     fn bounded_search_and_integer_extremes(){
