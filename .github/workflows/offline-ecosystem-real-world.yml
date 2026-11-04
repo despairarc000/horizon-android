@@ -60,6 +60,9 @@ jobs:
       - name: Build test game binary
         run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
       # Compare server-observed movement after stalled-step quarantine.
+      # Execute bounded one-block downhill survival packets when the
+      # server has verified the lower standing surface. Report only
+      # server-authoritative landing confirmations and actual inventory.
       # Test the bounded 13x13 natural-wood sensor and safe-ground frontier
       # progression after prior seeded-world runs found zero nearby logs.
       # Navigate toward bounded, server-sensed dropped item coordinates,
