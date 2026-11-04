@@ -59,6 +59,8 @@ jobs:
         run: cargo test --locked -p horizon-offline-ecosystem-core
       - name: Build test game binary
         run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
+      # Probes nearby loaded y-1/y/y+1 standing cells and reports whether
+      # natural-world bots are actually moving; do not count a login as movement.
       - name: Exercise two real loaded bot players (event-based acceptance)
         run: |
           python3 -m unittest discover -s external/offline-ecosystem/reference/tests -p test_ci_live_world.py -v

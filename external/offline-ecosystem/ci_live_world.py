@@ -51,6 +51,45 @@ def check_events(lines: list[str]) -> tuple[bool, str]:
     )
 
 
+TERRAIN_SAMPLE = re.compile(
+    r"Offline ecosystem (EcoAI[01]): "
+    r"(?:first authoritative survey at|exploration survey position) "
+    r"(-?\d+\.\d+),(-?\d+\.\d+),(-?\d+\.\d+)"
+    r".*?terrain_down=(\d+) terrain_up=(\d+) current_ground=(true|false)"
+)
+
+
+def terrain_report(lines: list[str]) -> dict[str,dict[str,int|float|bool]]:
+    observations: dict[str,list[tuple[float,float,float,int,int,bool]]] = {
+        name:[] for name in BOT_NAMES
+    }
+    for line in lines:
+        match=TERRAIN_SAMPLE.search(line)
+        if match:
+            name,x,y,z,lower,higher,standing=match.groups()
+            observations[name].append((
+                float(x),float(y),float(z),int(lower),int(higher),
+                standing=="true"
+            ))
+    result={}
+    for name,samples in observations.items():
+        if not samples:
+            result[name]={"samples":0,"horizontal_displacement":0.0}
+            continue
+        first=samples[0]
+        last=samples[-1]
+        result[name]={
+            "samples":len(samples),
+            "horizontal_displacement":round(
+                ((last[0]-first[0])**2+(last[2]-first[2])**2)**0.5,2
+            ),
+            "first_lower_stands":first[3],
+            "first_higher_stands":first[4],
+            "initial_column_standable":first[5],
+        }
+    return result
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -136,6 +175,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
 
     print(f"Headless integrated-world acceptance: {explanation}")
     print(f"Observed {len(lines)} console lines in {time.monotonic()-started:.1f}s")
+    print(f"Terrain elevation and authoritative movement: {terrain_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
