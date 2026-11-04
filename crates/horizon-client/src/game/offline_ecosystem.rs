@@ -406,6 +406,19 @@ fn watched_wood_drop(survey:&Survey,log:[i32;3])->Option<[f64;3]>{
             score(*a).total_cmp(&score(*b))
         })
 }
+/// The integrated server already verified support and collision at each
+/// surveyed standing surface. A newly spawned item can be *observed* even
+/// when no known surface is within the server's actual pickup box.
+/// Do not equate observed loot or a theoretical path with inventory gain.
+fn has_surveyed_pickup_stand(survey:&Survey,drop:[f64;3])->bool{
+    drop.iter().all(|v|v.is_finite()) && survey.terrain.iter().any(|p|{
+        let feet=f64::from(p[1]);
+        (f64::from(p[0])+0.5-drop[0]).abs()<1.5
+            && (f64::from(p[2])+0.5-drop[2]).abs()<1.5
+            && drop[1]>feet-0.6 && drop[1]<feet+2.4
+    })
+}
+
 /// Safe standing cells are supplied by Horizon's loaded-world collision
 /// survey. The actual item height must fit the game's pickup bounding box.
 fn ground_step_to_drop(survey:&Survey, drop:[f64;3])->Option<[f64;2]>{
@@ -626,6 +639,9 @@ fn run_local(
     let mut ascent:Option<(StepUpController,u64)>=None;
     let mut ascent_cooldown=0u64;
     let mut last_route_report_tick=None;
+    // Count authoritative observations, not speculative client ticks.
+    // Inaccessible loot can be left behind; it is never credited as wood.
+    let mut blocked_pickup_surveys=0u8;
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
         for mut received in rx.try_iter(){
@@ -662,6 +678,29 @@ fn run_local(
                     },
                     _=>{},
                 }
+            }
+            // If a REAL spawned item repeatedly has no server-verified
+            // standing surface in pickup range, stop waiting for an
+            // impossible *currently known* route. Resume ordinary resource
+            // search rather than wasting all 400 ticks on a sealed trunk.
+            let inaccessible=harvest.as_ref()
+                .filter(|probe|probe.block_removed())
+                .and_then(|probe|watched_wood_drop(&received,probe.target))
+                .is_some_and(|drop|!has_surveyed_pickup_stand(&received,drop));
+            blocked_pickup_surveys=if inaccessible {
+                blocked_pickup_surveys.saturating_add(1)
+            } else {0};
+            if blocked_pickup_surveys>=8 {
+                if let Some(unverified)=harvest.take(){
+                    log::info!(
+                        "Offline ecosystem {name}: observed drop still inaccessible after 8 server surveys; no pickup or inventory credit for {:?}",
+                        unverified.target
+                    );
+                    target_memory.avoid(unverified.target,received.tick);
+                    attempts=None;
+                    if let Ok(mut target)=watched_target.lock(){*target=None;}
+                }
+                blocked_pickup_surveys=0;
             }
             // Retain an active verified descent even when exploring without
             // a harvested block; it has its own bounded timeout.
@@ -979,6 +1018,7 @@ fn run_local(
                             harvest=Some(HarvestEvidence::new(
                                 log,survey.tick,survey.wood_inventory
                             ));
+                            blocked_pickup_surveys=0;
                             if let Ok(mut target)=watched_target.lock(){*target=Some(log);}
                             log::info!("Offline ecosystem {name}: mining attempt started at {:?}",log);
                         } else {
@@ -1339,6 +1379,32 @@ mod tests{
         };
         assert_eq!(exploratory_downhill_step(&survey,None),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
+    }
+    #[test]
+    fn observed_drop_without_safe_pickup_stand_cannot_count_as_collected(){
+        let mut survey=Survey{
+            tick:0,on_ground:true,position:[0.5,81.,0.5],
+            food:20,health:20.,food_inventory:0,wood_inventory:0,
+            hotbar_food_slot:None,nearby_log:None,watched_log:None,
+            ground:vec![[0,0]],logs:vec![],wood_drops:vec![[1.5,80.,0.5]],
+            terrain:vec![[0,81,0]],
+        };
+        assert!(!has_surveyed_pickup_stand(&survey,[1.5,80.,0.5]));
+        let mut evidence=HarvestEvidence::new([1,80,0],0,0);
+        assert_eq!(evidence.observe(8,Some(false),0),
+            HarvestStatus::BlockRemovedWithoutPickup);
+        for tick in 1..=8{
+            survey.tick=tick*8;
+            let drop=watched_wood_drop(&survey,[1,80,0]).unwrap();
+            assert!(!has_surveyed_pickup_stand(&survey,drop));
+        }
+        assert!(evidence.block_removed());
+        // If genuine safe standing terrain becomes visible, pickup is
+        // physically plausible again; still no inventory without a gain.
+        survey.terrain.push([1,80,0]);
+        assert!(has_surveyed_pickup_stand(&survey,[1.5,80.,0.5]));
+        assert_eq!(evidence.observe(72,None,0),
+            HarvestStatus::BlockRemovedWithoutPickup);
     }
     #[test]
     fn known_pickup_stands_prioritize_accessible_drops_over_buried_wood(){
