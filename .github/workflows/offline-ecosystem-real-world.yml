@@ -64,6 +64,9 @@ jobs:
       # beyond the current safe-grid pickup target; diagnose missing routes.
       # Exercise normal survival mining of reachable upper trunk logs,
       # so falling drops may enter the player's pickup box without a jump.
+      # Test ordinary one-block survival jumps for server-confirmed
+      # uphill approaches to naturally generated logs and dropped items.
+      # Preserve collision and ground flags; never fake a wood pickup.
       # Route natural lower tree trunks through executable server-checked
       # walking/one-block descent before ordinary mining and genuine pickup.
       # Prefer a verified lower path when naturally visible wood cannot
