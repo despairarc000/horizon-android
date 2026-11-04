@@ -379,7 +379,16 @@ fn run_local(
             if let Some(probe)=harvest.as_mut(){
                 let exists=received.watched_log.and_then(|(pos,is_log)|
                     (pos==probe.target).then_some(is_log));
+                let already_removed=probe.block_removed();
                 match probe.observe(received.tick,exists,received.wood_inventory){
+                    HarvestStatus::BlockRemovedWithoutPickup if !already_removed=>{
+                        // One authoritative loaded-block observation per
+                        // target, not an ACK or assumed successful STOP.
+                        log::info!(
+                            "Offline ecosystem {name}: exact server block observation confirmed target no longer log at {:?}",
+                            probe.target
+                        );
+                    },
                     HarvestStatus::ObservedWoodGain{gained}=>{
                         log::info!(
                             "Offline ecosystem {name}: correlated log removal and real inventory gain +{gained} at {:?}",
@@ -445,7 +454,7 @@ fn run_local(
                 mining_sequence+=1;
                 mining=None;
                 attempts=None;
-                log::info!("Offline ecosystem {name}: exact server block observation confirmed target no longer log");
+                log::info!("Offline ecosystem {name}: aborting mining because the server already observed the target gone");
             } else if survey.tick.saturating_sub(started)>=85{
                 player.finish_mining(target,1,mining_sequence)?;
                 mining_sequence+=1;
