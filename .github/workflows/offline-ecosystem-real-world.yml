@@ -73,6 +73,10 @@ jobs:
       # import, and try uphill exploration in the pinned natural world.
       # Run a deterministic stone-ledge survival jump test in the real
       # collision-aware in-memory LAN Hub before the natural-world probe.
+      # Prefer log targets whose expected drops have an observed
+      # physical pickup stand, and recover when a real drop stays out of
+      # reach across eight successive server terrain surveys. This is
+      # never a fabricated inventory increment.
       # Test ordinary one-block survival jumps for server-confirmed
       # uphill approaches to naturally generated logs and dropped items.
       # Preserve collision and ground flags; never fake a wood pickup.
