@@ -60,6 +60,8 @@ jobs:
       - name: Build test game binary
         run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
       # Compare server-observed movement after stalled-step quarantine.
+      # Diagnose actual guest_destroy result and the world block state,
+      # not just an accepted START/STOP decision, before crediting inventory.
       # Log authoritative START/STOP mining gate decisions alongside pickups.
       # Includes the mutable server reach-check diagnostic fix.
       # Neither login, packet emission nor START proves resource collection.
