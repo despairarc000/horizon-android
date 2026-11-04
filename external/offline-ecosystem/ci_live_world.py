@@ -261,6 +261,42 @@ DOWNHILL_REJECTED = re.compile(
 )
 
 
+VERTICAL_LANDING = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server-authoritative "
+    r"(?:uphill|downhill) landing at \\[(-?\\d+),\\s*(-?\\d+),\\s*(-?\\d+)\\]"
+)
+
+
+def vertical_cycle_report(lines: list[str]) -> dict[str, dict[str, int]]:
+    """Detect A-B-A-B real landing cycles, not merely requested jumps.
+
+    An eight-landing alternation in the same two cells is a repeat-loop
+    regression, not meaningful exploration. Other physical paths remain
+    accepted; all reports use only server-confirmed landings.
+    """
+    landings: dict[str, list[tuple[int, int, int]]] = {
+        bot: [] for bot in BOT_NAMES
+    }
+    for line in lines:
+        if match := VERTICAL_LANDING.search(line):
+            bot, x, y, z = match.groups()
+            landings[bot].append((int(x), int(y), int(z)))
+    result = {}
+    for bot, path in landings.items():
+        current = best = 0
+        for i in range(2, len(path)):
+            if path[i] == path[i - 2] and path[i] != path[i - 1]:
+                current = current + 1 if current else 3
+                best = max(best, current)
+            else:
+                current = 0
+        result[bot] = {
+            "server_confirmed_vertical_landings": len(path),
+            "longest_two_surface_alternation": best,
+        }
+    return result
+
+
 def downhill_report(lines: list[str]) -> dict[str,int]:
     """Only the authoritative landing trace counts as a successful descent."""
     result = {
@@ -452,6 +488,11 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Actual server destruction outcomes: {server_destroy_report(lines)}")
     print(f"Survival downhill movement evidence: {downhill_report(lines)}")
     print(f"Survival uphill movement evidence: {uphill_report(lines)}")
+    cycles=vertical_cycle_report(lines)
+    print(f"Repeated authoritative vertical landing cycles: {cycles}")
+    loop_ok=all(v["longest_two_surface_alternation"]<8 for v in cycles.values())
+    if not loop_ok:
+        print("ERROR: repeated confirmed landings show an eight-step two-surface exploration cycle")
     print(f"Physical drops and pickup geometry (not confirmed inventory): {item_pickup_report(lines)}")
     print(f"Inaccessible dropped item recovery (no pickup): {blocked_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
@@ -466,7 +507,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
         lines, min_bots, excursion_blocks
     )
     print(f"Authoritative movement acceptance: {movement_note}")
-    return 0 if reached and held_for_requested_period and movement_ok and access_ok else 1
+    return 0 if reached and held_for_requested_period and movement_ok and access_ok and loop_ok else 1
 
 
 def main() -> int:
