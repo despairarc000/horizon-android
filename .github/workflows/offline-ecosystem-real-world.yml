@@ -62,6 +62,8 @@ jobs:
       # Compare server-observed movement after stalled-step quarantine.
       # Check a reachable standing-surface frontier when a real drop lies
       # beyond the current safe-grid pickup target; diagnose missing routes.
+      # Reject visible but unapproachable trees and escape small isolated
+      # spawn ground patches through strictly verified downhill movements.
       # Test 11x11x3 real standing-surface scans and a one-pass
       # connected walk/down detour toward actual wood drops. No jump,
       # teleport, resource spawning, or unverified inventory rewards.
