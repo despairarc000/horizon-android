@@ -246,6 +246,36 @@ def item_pickup_report(lines: list[str]) -> dict[str, int]:
     return result
 
 
+DOWNHILL_ATTEMPT = re.compile(
+    r"Offline ecosystem (EcoAI[01]): attempting normal downhill movement to verified surface"
+)
+DOWNHILL_CONFIRMED = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server-authoritative downhill landing"
+)
+DOWNHILL_UNCONFIRMED = re.compile(
+    r"Offline ecosystem (EcoAI[01]): downhill motion unconfirmed"
+)
+DOWNHILL_REJECTED = re.compile(
+    r"Offline ecosystem (EcoAI[01]): downhill packet rejected"
+)
+
+
+def downhill_report(lines: list[str]) -> dict[str,int]:
+    """Only the authoritative landing trace counts as a successful descent."""
+    result = {
+        "downhill_attempts": 0,
+        "server_confirmed_landings": 0,
+        "unconfirmed_timeouts": 0,
+        "rejected_packets": 0,
+    }
+    for line in lines:
+        result["downhill_attempts"] += bool(DOWNHILL_ATTEMPT.search(line))
+        result["server_confirmed_landings"] += bool(DOWNHILL_CONFIRMED.search(line))
+        result["unconfirmed_timeouts"] += bool(DOWNHILL_UNCONFIRMED.search(line))
+        result["rejected_packets"] += bool(DOWNHILL_REJECTED.search(line))
+    return result
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -336,6 +366,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Bot steering transport diagnostics (not confirmed motion): {steering_report(lines)}")
     print(f"Server-side survival mining decisions: {server_mining_report(lines)}")
     print(f"Actual server destruction outcomes: {server_destroy_report(lines)}")
+    print(f"Survival downhill movement evidence: {downhill_report(lines)}")
     print(f"Physical drops and pickup geometry (not confirmed inventory): {item_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
