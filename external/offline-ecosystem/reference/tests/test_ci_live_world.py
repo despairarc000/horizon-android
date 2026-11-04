@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ci_live_world import (
     check_events, terrain_report, steering_report, server_mining_report,
-    server_destroy_report, confirm_observed_exploration,
+    server_destroy_report, item_pickup_report, confirm_observed_exploration,
 )
 
 def login(name, eid):
@@ -92,6 +92,22 @@ class DestroyEvidenceTests(unittest.TestCase):
         ])
         self.assertEqual(result["actor_unavailable"],1)
         self.assertEqual(result["world_mutations_observed"],0)
+
+class ItemPickupGeometryTests(unittest.TestCase):
+    def test_distinguishes_spawned_items_from_items_touchable_by_a_player(self):
+        lines=[
+            "Offline ecosystem EcoAI0: server destroy drop_entities=2 sample=minecraft:oak_log@0.5,63.5,0.5",
+            "Offline ecosystem EcoAI0: item pickup geometry local_drops=2 horizontal_near=2 actually_touchable=0 sampled_y=63.20",
+            "Offline ecosystem EcoAI0: item pickup geometry local_drops=2 horizontal_near=2 actually_touchable=1 sampled_y=64.00",
+            "Offline ecosystem EcoAI1: server destroy drop_entities=0 sample=",
+        ]
+        summary=item_pickup_report(lines)
+        self.assertEqual(summary["new_server_drop_entities"],2)
+        self.assertEqual(summary["sampled_pickup_checks"],2)
+        self.assertEqual(summary["max_local_drop_entities"],2)
+        self.assertEqual(summary["max_horizontally_near"],2)
+        self.assertEqual(summary["max_touchable"],1)
+        self.assertEqual(item_pickup_report([])["new_server_drop_entities"],0)
 
 class TerrainProbeTests(unittest.TestCase):
     def test_reports_validated_elevations_and_actual_displacement(self):
