@@ -44,6 +44,8 @@ struct Survey {
     /// At most 32 nearby real server blocks; unrecognized/absent blocks
     /// are never treated as resources. Not yet an occlusion-aware view.
     logs: Vec<[i32; 3]>,
+    /// Real nearby wood item entities, not invented loot or predicted positions.
+    wood_drops: Vec<[f64;3]>,
 }
 /// Transport-level steering evidence. Packet emission is NEVER credited as
 /// server-acknowledged movement: the next authoritative survey decides that.
@@ -294,8 +296,9 @@ impl ExperimentalBots {
     /// probes nearby logs, but is NOT visual line-of-sight perception yet;
     /// occluded blocks in that radius may be discovered. Never scan an
     /// unloaded chunk, never synthesize a block or resource.
-    pub(super) fn survey<F,G,H>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G,mut is_standable:H)
-    where F: FnMut([i32;3])->Option<bool>, G: FnMut(&str)->bool,H:FnMut([i32;3])->bool
+    pub(super) fn survey<F,G,H,J>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G,mut is_standable:H,mut item_positions:J)
+    where F: FnMut([i32;3])->Option<bool>, G: FnMut(&str)->bool,H:FnMut([i32;3])->bool,
+        J:FnMut([f64;3])->Vec<[f64;3]>
     {
         self.survey_ticks+=1;
         if self.survey_ticks%8!=0{return;}
@@ -328,6 +331,13 @@ impl ExperimentalBots {
                 .and_then(|target|is_log(target).map(|is_log|(target,is_log)));
             let (food_inventory,wood_inventory,hotbar_food_slot)=
                 inventory_supply(&guest.inventory,&mut is_edible);
+            let mut wood_drops=item_positions(pos);
+            // Redundant input boundary: no arbitrary world-wide item list.
+            wood_drops.retain(|p|p.iter().all(|v|v.is_finite())
+                && (p[0]-pos[0]).abs()<=6.0
+                && (p[1]-pos[1]).abs()<=4.0
+                && (p[2]-pos[2]).abs()<=6.0);
+            wood_drops.truncate(16);
             // One outstanding observation maximum per player. If a worker
             // is behind, discard instead of blocking the game tick.
             let sent=sink.tx.try_send(Survey{
@@ -342,6 +352,7 @@ impl ExperimentalBots {
                 watched_log,
                 ground,
                 logs,
+                wood_drops,
             });
             if sent.is_ok() && !sink.first_observation_logged {
                 // This occurs only after Horizon has accepted the player
@@ -602,6 +613,7 @@ mod tests{
             position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,ground:vec![[0,0]], logs:vec![],
+            wood_drops:vec![],
         };
         assert_eq!(decide(&survey,0),Intent::Explore);
         survey.nearby_log=Some([1,64,0]);
@@ -679,7 +691,7 @@ mod tests{
             tick:0,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([3,64,0]),watched_log:None,logs:vec![[3,64,0]],
-            ground:vec![[0,0],[0,1],[1,1],[2,1],[3,1]],
+            wood_drops:vec![],ground:vec![[0,0],[0,1],[1,1],[2,1],[3,1]],
         };
         assert_eq!(ground_step_to_log(&s,[3,64,0]),Some([0.5,1.5]));
         s.ground=vec![[0,0],[3,1]];
