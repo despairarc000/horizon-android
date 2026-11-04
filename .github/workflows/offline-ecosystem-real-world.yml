@@ -59,8 +59,9 @@ jobs:
         run: cargo test --locked -p horizon-offline-ecosystem-core
       - name: Build test game binary
         run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
-      # Compare sparse server-position observations with outgoing steering
-      # packets and errors. Neither login nor packets prove physical movement.
+      # Compare server-observed movement after stalled-step quarantine.
+      # Log authoritative START/STOP mining gate decisions alongside pickups.
+      # Neither login, packet emission nor START proves resource collection.
       # Report nearby loaded y-1/y/y+1 standing surfaces as obstacles.
       - name: Diagnose real-world movement and harvesting for two loaded bots
         run: |
