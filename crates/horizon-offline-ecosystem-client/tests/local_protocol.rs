@@ -152,6 +152,11 @@ fn inventory_click_requires_real_server_snapshot_and_reconciliation() {
                 container:0,state:5,slot:36,item:None,
             }
         ).encode()).unwrap();
+        // Horizon's answer_click sends the carried stack in a separate
+        // SetCursorItem packet after the slot changes, not a slot -1.
+        server.send(&play::Clientbound::SetCursorItem(
+            play::SetCursorItem{item:Some(Stack::new(7,2))}
+        ).encode()).unwrap();
     });
     let mut bot=LocalPlayer::join(client,"EcoMenu",2).unwrap();
     assert!(bot.inventory_click(36,0,0).is_err());
@@ -169,10 +174,13 @@ fn inventory_click_requires_real_server_snapshot_and_reconciliation() {
     bot.inventory_click(36,0,0).unwrap();
     assert!(bot.inventory_click_pending());
     assert!(bot.inventory_click(1,0,0).is_err());
-    bot.pump_one().unwrap();
-    assert!(!bot.inventory_click_pending());
+    bot.pump_one().unwrap(); // Slot correction alone is not enough.
+    assert!(bot.inventory_click_pending());
     assert_eq!(bot.inventory_menu().unwrap().revision,5);
     assert!(bot.inventory_menu().unwrap().slots[36].is_none());
+    bot.pump_one().unwrap(); // Separate authoritative cursor correction.
+    assert!(!bot.inventory_click_pending());
+    assert_eq!(bot.inventory_menu().unwrap().carried.as_ref().unwrap().count,2);
     peer.join().unwrap();
 }
 
