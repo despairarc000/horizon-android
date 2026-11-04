@@ -279,7 +279,7 @@ def downhill_report(lines: list[str]) -> dict[str,int]:
 
 UPHILL_ATTEMPT = re.compile(
     r"Offline ecosystem (EcoAI[01]): "
-    r"(?:attempting normal uphill jump to|approaching real trunk uphill toward) "
+    r"(?:attempting normal uphill jump to|approaching real trunk uphill toward|exploring uphill toward) "
     r"verified surface"
 )
 UPHILL_LANDING = re.compile(
@@ -290,6 +290,9 @@ UPHILL_TIMEOUT = re.compile(
 )
 UPHILL_REJECTED = re.compile(
     r"Offline ecosystem (EcoAI[01]): uphill packet rejected"
+)
+UPHILL_INVALID_ARC = re.compile(
+    r"Offline ecosystem (EcoAI[01]): uphill arc invalid before verified landing"
 )
 
 
@@ -302,6 +305,7 @@ def uphill_report(lines: list[str]) -> dict[str, int]:
         ),
         "unconfirmed_uphill_timeouts": sum(bool(UPHILL_TIMEOUT.search(x)) for x in lines),
         "rejected_uphill_packets": sum(bool(UPHILL_REJECTED.search(x)) for x in lines),
+        "invalid_uphill_arcs": sum(bool(UPHILL_INVALID_ARC.search(x)) for x in lines),
     }
 
 
