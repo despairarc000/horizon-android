@@ -18,7 +18,7 @@ use ecosystem_core::{
     navigation::TargetMemory,
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
-    explore::ExplorationMemory,
+    explore::{ExplorationMemory,VerticalTransitionMemory},
     terrain_path::{first_walk_down_step,first_terrain_step,best_walk_down_frontier,RouteMotion,RouteStep,StepDownController,StepUpController},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
@@ -326,29 +326,37 @@ fn can_approach_log(survey:&Survey,log:[i32;3])->bool{
 /// When ordinary exploration is trapped on a tiny plateau, follow only
 /// connected server-verified standing surfaces to a one-block lower level.
 /// No jump-only or unknown transitions are allowed.
-fn exploratory_downhill_step(survey:&Survey)->Option<RouteStep>{
+fn exploratory_downhill_step(
+    survey:&Survey,avoid_return:Option<[i32;3]>
+)->Option<RouteStep>{
     let start=[
         survey.position[0].floor() as i32,
         survey.position[1].floor() as i32,
         survey.position[2].floor() as i32,
     ];
-    let lower:Vec<_>=survey.terrain.iter().copied()
+    let safe:Vec<_>=survey.terrain.iter().copied()
+        .filter(|p|Some(*p)!=avoid_return).collect();
+    let lower:Vec<_>=safe.iter().copied()
         .filter(|p|p[1]<start[1]).collect();
-    first_walk_down_step(start,&lower,&survey.terrain)
+    first_walk_down_step(start,&lower,&safe)
 }
 /// No descending connection? A verified one-block jump can open a new
 /// plateau and prevent being trapped at an isolated lower elevation.
 /// This only chooses collision-checked standing surfaces; all jump packets
 /// still need normal server approval and later authoritative landing.
-fn exploratory_uphill_step(survey:&Survey)->Option<RouteStep>{
+fn exploratory_uphill_step(
+    survey:&Survey,avoid_return:Option<[i32;3]>
+)->Option<RouteStep>{
     let start=[
         survey.position[0].floor() as i32,
         survey.position[1].floor() as i32,
         survey.position[2].floor() as i32,
     ];
-    let higher:Vec<_>=survey.terrain.iter().copied()
+    let safe:Vec<_>=survey.terrain.iter().copied()
+        .filter(|p|Some(*p)!=avoid_return).collect();
+    let higher:Vec<_>=safe.iter().copied()
         .filter(|p|p[1]>start[1]).collect();
-    first_terrain_step(start,&higher,&survey.terrain)
+    first_terrain_step(start,&higher,&safe)
 }
 
 /// A server-published player location is only a *landing* if its
@@ -575,6 +583,7 @@ fn run_local(
 )->Result<(),String>{
     let mut player=LocalPlayer::join(pipe,name,2)?;
     let mut exploration=ExplorationMemory::new();
+    let mut vertical_memory=VerticalTransitionMemory::new();
     let mut steering=SteeringEvidence::default();
     let mut next_tick=Instant::now();
     let mut last_survey=None;
@@ -709,6 +718,7 @@ fn run_local(
             let target=controller.destination;
             let reached=server_confirmed_landing(survey,target);
             if reached {
+                vertical_memory.observed_landing(controller.origin,target,survey.tick);
                 log::info!(
                     "Offline ecosystem {name}: server-authoritative uphill landing at {target:?}"
                 );
@@ -753,6 +763,7 @@ fn run_local(
             let target=controller.destination;
             let reached=server_confirmed_landing(survey,target);
             if reached {
+                vertical_memory.observed_landing(controller.origin,target,survey.tick);
                 log::info!(
                     "Offline ecosystem {name}: server-authoritative downhill landing at {target:?}"
                 );
@@ -985,16 +996,26 @@ fn run_local(
             // indefinitely among a few familiar flat tiles. The server
             // already supplied only loaded, supported, dry standing cells.
             let blocked_wood=!survey.logs.is_empty() && survey.nearby_log.is_none();
+            // visited_count only grows, so using it as a permanent trigger
+            // causes repeated up/down oscillation even on useful flat
+            // routes. Prefer normal exploration whenever it is available.
             let seek_vertical=blocked_wood
                 || survey.ground.len()<=3
-                || exploration.visited_count()>16
                 || flat_step.is_none();
+            let current=[
+                survey.position[0].floor() as i32,
+                survey.position[1].floor() as i32,
+                survey.position[2].floor() as i32,
+            ];
+            let avoid_return=vertical_memory.avoid_immediate_return(
+                current,survey.tick
+            );
             let downhill=if seek_vertical && survey.tick>=descent_cooldown {
-                exploratory_downhill_step(survey)
+                exploratory_downhill_step(survey,avoid_return)
             } else {None};
             let vertical=downhill.or_else(||{
                 if seek_vertical && survey.tick>=ascent_cooldown {
-                    exploratory_uphill_step(survey)
+                    exploratory_uphill_step(survey,avoid_return)
                 } else {None}
             });
             if let Some(route)=vertical {
@@ -1150,10 +1171,10 @@ mod tests{
             "normal eye-level reach should allow upper trunk harvesting");
         assert!(!can_approach_log(&survey,[1,68,0]));
         assert!(!can_approach_log(&survey,[1,63,0]));
-        assert_eq!(exploratory_downhill_step(&survey),
+        assert_eq!(exploratory_downhill_step(&survey,None),
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
         survey.terrain=vec![[0,65,0],[2,64,0]];
-        assert_eq!(exploratory_downhill_step(&survey),None);
+        assert_eq!(exploratory_downhill_step(&survey,None),None);
     }
     #[test]
     fn higher_trunk_routes_only_when_server_surface_supports_real_jump(){
@@ -1215,7 +1236,7 @@ mod tests{
         assert!(!survey.logs.is_empty() && survey.nearby_log.is_none());
         // The abstract safe downhill route is only a plan; server position
         // still decides whether a physical landing happened.
-        assert_eq!(exploratory_downhill_step(&survey),Some(
+        assert_eq!(exploratory_downhill_step(&survey,None),Some(
             RouteStep{at:[1,65,0],motion:RouteMotion::Walk}
         ));
     }
@@ -1246,11 +1267,11 @@ mod tests{
             ground:vec![[0,0]],
             terrain:vec![[0,64,0],[1,65,0]],
         };
-        assert_eq!(exploratory_downhill_step(&survey),None);
-        assert_eq!(exploratory_uphill_step(&survey),
+        assert_eq!(exploratory_downhill_step(&survey,None),None);
+        assert_eq!(exploratory_uphill_step(&survey,None),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::JumpUp}));
         survey.terrain=vec![[0,64,0],[2,65,0]];
-        assert_eq!(exploratory_uphill_step(&survey),None);
+        assert_eq!(exploratory_uphill_step(&survey,None),None);
     }
     #[test]
     fn uphill_exploration_can_use_flat_approach_first(){
@@ -1261,8 +1282,29 @@ mod tests{
             ground:vec![[0,0],[1,0]],
             terrain:vec![[0,64,0],[1,64,0],[2,65,0]],
         };
-        assert_eq!(exploratory_uphill_step(&survey),
+        assert_eq!(exploratory_uphill_step(&survey,None),
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::Walk}));
+    }
+    #[test]
+    fn confirmed_vertical_landing_memory_blocks_immediate_exploration_reversal(){
+        let mut m=VerticalTransitionMemory::new();
+        let a=[0,64,0];
+        let b=[1,65,0];
+        m.observed_landing(a,b,100);
+        let survey=Survey{
+            tick:101,on_ground:true,position:[1.5,65.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
+            ground:vec![[1,0]],terrain:vec![a,b],
+        };
+        assert_eq!(exploratory_downhill_step(&survey,None),
+            Some(RouteStep{at:a,motion:RouteMotion::StepDown}));
+        let excluded=m.avoid_immediate_return(b,101);
+        assert_eq!(excluded,Some(a));
+        assert_eq!(exploratory_downhill_step(&survey,excluded),None);
+        assert_eq!(exploratory_downhill_step(&survey,
+            m.avoid_immediate_return(b,220)),
+            Some(RouteStep{at:a,motion:RouteMotion::StepDown}));
     }
     #[test]
     fn connected_downhill_escape_can_first_walk_across_plateau(){
@@ -1273,7 +1315,7 @@ mod tests{
             wood_drops:vec![],ground:vec![[0,0],[1,0]],
             terrain:vec![[0,65,0],[1,65,0],[2,64,0]],
         };
-        assert_eq!(exploratory_downhill_step(&survey),
+        assert_eq!(exploratory_downhill_step(&survey,None),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
     }
     #[test]
