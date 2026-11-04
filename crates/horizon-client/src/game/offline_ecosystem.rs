@@ -333,6 +333,20 @@ fn exploratory_downhill_step(survey:&Survey)->Option<RouteStep>{
         .filter(|p|p[1]<start[1]).collect();
     first_walk_down_step(start,&lower,&survey.terrain)
 }
+/// No descending connection? A verified one-block jump can open a new
+/// plateau and prevent being trapped at an isolated lower elevation.
+/// This only chooses collision-checked standing surfaces; all jump packets
+/// still need normal server approval and later authoritative landing.
+fn exploratory_uphill_step(survey:&Survey)->Option<RouteStep>{
+    let start=[
+        survey.position[0].floor() as i32,
+        survey.position[1].floor() as i32,
+        survey.position[2].floor() as i32,
+    ];
+    let higher:Vec<_>=survey.terrain.iter().copied()
+        .filter(|p|p[1]>start[1]).collect();
+    first_terrain_step(start,&higher,&survey.terrain)
+}
 
 /// Locate a real nearby wood drop whose spawn or subsequent physics place
 /// it close to the watched break. This is spatial evidence, not ownership.
@@ -960,15 +974,19 @@ fn run_local(
             // indefinitely among a few familiar flat tiles. The server
             // already supplied only loaded, supported, dry standing cells.
             let blocked_wood=!survey.logs.is_empty() && survey.nearby_log.is_none();
-            let downhill=if survey.tick>=descent_cooldown
-                && (blocked_wood
-                    || survey.ground.len()<=3
-                    || exploration.visited_count()>16
-                    || flat_step.is_none())
-            {
+            let seek_vertical=blocked_wood
+                || survey.ground.len()<=3
+                || exploration.visited_count()>16
+                || flat_step.is_none();
+            let downhill=if seek_vertical && survey.tick>=descent_cooldown {
                 exploratory_downhill_step(survey)
             } else {None};
-            if let Some(route)=downhill {
+            let vertical=downhill.or_else(||{
+                if seek_vertical && survey.tick>=ascent_cooldown {
+                    exploratory_uphill_step(survey)
+                } else {None}
+            });
+            if let Some(route)=vertical {
                 match route.motion{
                     RouteMotion::Walk=>{
                         let target=[f64::from(route.at[0])+0.5,
@@ -986,7 +1004,18 @@ fn run_local(
                             descent=Some((controller,survey.tick));
                         }
                     },
-                    RouteMotion::JumpUp=>{},
+                    RouteMotion::JumpUp=>{
+                        if let Some(controller)=
+                            StepUpController::begin(survey.position,route.at)
+                        {
+                            log::info!(
+                                "Offline ecosystem {name}: exploring uphill toward verified surface {:?}",
+                                route.at
+                            );
+                            ascent=Some((controller,survey.tick));
+                            descent=None;
+                        }
+                    },
                 }
             } else if let Some(step)=flat_step{
                 // Never cross unknown ground. All physical movement remains
@@ -1178,6 +1207,33 @@ mod tests{
         assert_eq!(exploratory_downhill_step(&survey),Some(
             RouteStep{at:[1,65,0],motion:RouteMotion::Walk}
         ));
+    }
+    #[test]
+    fn isolated_lower_player_can_choose_safe_one_block_uphill_route(){
+        let mut survey=Survey{
+            tick:0,position:[0.5,64.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
+            ground:vec![[0,0]],
+            terrain:vec![[0,64,0],[1,65,0]],
+        };
+        assert_eq!(exploratory_downhill_step(&survey),None);
+        assert_eq!(exploratory_uphill_step(&survey),
+            Some(RouteStep{at:[1,65,0],motion:RouteMotion::JumpUp}));
+        survey.terrain=vec![[0,64,0],[2,65,0]];
+        assert_eq!(exploratory_uphill_step(&survey),None);
+    }
+    #[test]
+    fn uphill_exploration_can_use_flat_approach_first(){
+        let survey=Survey{
+            tick:0,position:[0.5,64.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
+            ground:vec![[0,0],[1,0]],
+            terrain:vec![[0,64,0],[1,64,0],[2,65,0]],
+        };
+        assert_eq!(exploratory_uphill_step(&survey),
+            Some(RouteStep{at:[1,64,0],motion:RouteMotion::Walk}));
     }
     #[test]
     fn connected_downhill_escape_can_first_walk_across_plateau(){
