@@ -412,6 +412,14 @@ fn run_local(
             received.nearby_log=target_memory.observe(
                 received.tick,received.position,&walkable_height
             );
+            if let Some(blocked) = exploration.observe_server_position(
+                received.tick, [received.position[0], received.position[2]]
+            ) {
+                log::info!(
+                    "Offline ecosystem {name}: exploration stalled; temporarily avoiding verified step {:?}",
+                    blocked
+                );
+            }
             player.state.position=Some(received.position);
             // This reports only outgoing packet attempts and local errors.
             // Physical progress is measured separately from server positions.
@@ -534,7 +542,9 @@ fn run_local(
                 // This can lead well beyond the initial spawn, but only
                 // through the level-ground cells currently observed.
                 let target=[f64::from(step[0])+0.5,f64::from(step[1])+0.5];
-                steering.steer(&mut player,target);
+                if steering.steer(&mut player,target) {
+                    exploration.attempted_step(step);
+                }
             }
         }
         player.client_tick_end()?;
