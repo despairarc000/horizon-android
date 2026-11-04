@@ -74,6 +74,12 @@ fn in_memory_join_teleport_loaded_chunk_move_and_use() {
         let (id,body)=s.recv().unwrap();
         let play::Serverbound::Attack(attack)=play::Serverbound::decode(id,&body).unwrap() else{panic!("attack")};
         assert_eq!(attack.id,101);
+        let (id,body)=s.recv().unwrap();
+        let play::Serverbound::SetCarriedItem(selected)=play::Serverbound::decode(id,&body).unwrap() else{panic!("hotbar selection");};
+        assert_eq!(selected.slot,0);
+        let (id,body)=s.recv().unwrap();
+        let play::Serverbound::UseItem(use_request)=play::Serverbound::decode(id,&body).unwrap() else{panic!("item use");};
+        assert_eq!((use_request.hand,use_request.sequence),(0,104));
     });
     let mut bot=LocalPlayer::join(client,"EcoBot0",2).unwrap();
     assert_eq!(bot.name(),"EcoBot0");
@@ -92,6 +98,10 @@ fn in_memory_join_teleport_loaded_chunk_move_and_use() {
     bot.begin_mining([1,64,1],1,12).unwrap();
     bot.finish_mining([1,64,1],1,13).unwrap();
     bot.attack_entity(101).unwrap();
+    assert!(bot.select_hotbar(9).is_err());
+    assert!(bot.use_selected_item(0).is_err());
+    bot.select_hotbar(0).unwrap();
+    bot.use_selected_item(104).unwrap();
     srv.join().unwrap();
 }
 

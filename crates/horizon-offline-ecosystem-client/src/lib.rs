@@ -299,6 +299,23 @@ impl LocalPlayer {
     pub fn client_tick_end(&mut self)->Result<(),String>{
         self.send(play::Serverbound::ClientTickEnd(Empty))
     }
+    /// Select an actual hotbar slot, which the authoritative server may
+    /// accept or reject. This never manufactures inventory.
+    pub fn select_hotbar(&mut self,slot:u8)->Result<(),String>{
+        if !self.state.ready{return Err("player not ready".into());}
+        if slot>8{return Err("hotbar slot must be 0..=8".into());}
+        self.send(play::Serverbound::SetCarriedItem(play::SetCarriedItem{
+            slot:i16::from(slot),
+        }))
+    }
+    /// Begin using the selected item under normal Minecraft survival rules.
+    /// Only server inventory changes prove actual food consumption.
+    pub fn use_selected_item(&mut self,sequence:i32)->Result<(),String>{
+        if !self.state.ready||sequence<=0{return Err("invalid item-use request".into());}
+        self.send(play::Serverbound::UseItem(play::UseItem{
+            hand:0,sequence,yaw:self.state.yaw,pitch:self.state.pitch,
+        }))
+    }
     pub fn use_item_on(&mut self,pos:[i32;3],face:i32,sequence:i32)->Result<(),String>{
         if !self.state.ready{return Err("player not ready".into());}
         if !(0..=5).contains(&face)||sequence<=0{return Err("invalid action".into());}
