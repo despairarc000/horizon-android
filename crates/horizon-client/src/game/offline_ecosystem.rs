@@ -41,8 +41,8 @@ struct Survey {
     /// Loaded, approximately level ground tiles with full support and
     /// two-block clearance. Never an omniscient traversability map.
     ground: Vec<[i32;2]>,
-    /// At most 32 nearby real server blocks; unrecognized/absent blocks
-    /// are never treated as resources. Not yet an occlusion-aware view.
+    /// At most 32 nearby real server blocks within a 13x13 search.
+    /// Only loaded cells; not yet an occlusion-aware view.
     logs: Vec<[i32; 3]>,
     /// Real nearby wood item entities, not invented loot or predicted positions.
     wood_drops: Vec<[f64;3]>,
@@ -138,9 +138,9 @@ fn log_candidates<F:FnMut([i32;3])->bool>(
     center:[i32;3],mut is_log:F
 )->Vec<[i32;3]>{
     let mut found=Vec::new();
-    for dx in -3i32..=3 {
+    for dx in -6i32..=6 {
         for dy in -1i32..=2 {
-            for dz in -3i32..=3 {
+            for dz in -6i32..=6 {
                 let p=[center[0]+dx,center[1]+dy,center[2]+dz];
                 if is_log(p){
                     let d=dx.abs()+dy.abs()+dz.abs();
@@ -236,8 +236,23 @@ fn prefer_pickup_height(logs:&mut [[i32;3]], feet:[f64;3]){
 fn ground_step_to_log(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
     let start=[survey.position[0].floor() as i32,survey.position[2].floor() as i32];
     let goals=neighboring_resource_goals(log,&survey.ground);
-    let step=first_ground_step(start,&goals,&survey.ground)?;
-    Some([f64::from(step[0])+0.5,f64::from(step[1])+0.5])
+    let first=first_ground_step(start,&goals,&survey.ground).or_else(||{
+        // A visible tree can lie OUTSIDE the 7x7 motion survey. Don't
+        // discard it or magically cross unknown cells: route to the nearest
+        // actually reachable frontier cell that gets closer to the tree.
+        let distance=|p:[i32;2]|{
+            (i64::from(p[0])-i64::from(log[0])).abs()
+                +(i64::from(p[1])-i64::from(log[2])).abs()
+        };
+        let here=distance(start);
+        let mut frontiers:Vec<_>=survey.ground.iter().copied()
+            .filter(|&p|p!=start && distance(p)<here).collect();
+        frontiers.sort_by_key(|&p|(distance(p),p[0],p[1]));
+        frontiers.into_iter().find_map(|goal|
+            first_ground_step(start,&[goal],&survey.ground)
+        )
+    })?;
+    Some([f64::from(first[0])+0.5,f64::from(first[1])+0.5])
 }
 /// Locate a real nearby wood drop whose spawn or subsequent physics place
 /// it close to the watched break. This is spatial evidence, not ownership.
@@ -679,12 +694,29 @@ mod tests{
         assert_eq!(all.len(),32);
         assert_eq!(all[0],origin);
         assert!(all.iter().all(|p|
-            (p[0]-origin[0]).abs()<=3 &&
+            (p[0]-origin[0]).abs()<=6 &&
             (p[1]-origin[1]).abs()<=2 &&
-            (p[2]-origin[2]).abs()<=3
+            (p[2]-origin[2]).abs()<=6
         ));
         assert_eq!(log_candidates(origin,|p|p==[3,64,0]),vec![[3,64,0]]);
         assert!(log_candidates(origin,|_|false).is_empty());
+    }
+    #[test]
+    fn distant_observed_tree_routes_to_nearest_safe_ground_frontier(){
+        let mut s=Survey{
+            tick:0,position:[0.5,64.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:Some([6,64,0]),watched_log:None,
+            ground:vec![[0,0],[1,0],[2,0],[3,0]],
+            logs:vec![[6,64,0]],wood_drops:vec![],
+        };
+        assert_eq!(ground_step_to_log(&s,[6,64,0]),Some([1.5,0.5]));
+        // A disconnected tile near a tree does not become a magical path.
+        s.ground=vec![[0,0],[3,0]];
+        assert_eq!(ground_step_to_log(&s,[6,64,0]),None);
+        // A target with no forward progress remains unrouteable.
+        s.ground=vec![[0,0],[-1,0]];
+        assert_eq!(ground_step_to_log(&s,[6,64,0]),None);
     }
     #[test]fn inventory_uses_only_real_item_stacks_and_hotbar_food(){
         use std::sync::Arc;
