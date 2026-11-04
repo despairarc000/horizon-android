@@ -1448,10 +1448,12 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
     );
 }
 
-/// Purpose-built physical-motion regression using the real in-memory
-/// Horizon LAN hub, authentic survival-mode movement packets and a simple
-/// preexisting stone step. This proves hub movement acceptance, NOT natural
-/// item harvesting or the complete game physics simulation.
+/// In-memory protocol regression against the real Horizon LAN hub,
+/// configured with survival game mode and a one-block stone step.
+/// The existing lan_bot test harness passes collision=None to TickCtx:
+/// this checks server movement acceptance and ground-flag handling, NOT
+/// collision-resolved jumping, natural harvesting, or full game physics.
+/// The resource-backed world runner remains the real collision test.
 #[test]
 fn offline_ecosystem_survival_jump_lands_on_server_known_stone_step(){
     use horizon_offline_ecosystem_core::terrain_path::StepUpController;
