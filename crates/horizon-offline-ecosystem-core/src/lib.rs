@@ -185,3 +185,4 @@ mod tests {
 /// Deterministic room-graph prototype for multi-bot simulation.
 pub mod population;
 pub mod navigation;
+pub mod harvest;
