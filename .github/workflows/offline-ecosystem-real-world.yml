@@ -1,5 +1,8 @@
 name: Offline ecosystem real-world integration
 # One-off trigger: file changes, plus optional workflow dispatch when available.
+# Connected wood-only trial (2026-11-04): confirm that the bot refuses
+# zero-access logs unless removing one opens a collision-safe standing surface.
+# Require real item and inventory evidence before calling harvest complete.
 # Access-aware natural wood trial (2026-11-04): verify whether first walking to a
 # connected loaded-world pickup stand improves real drop proximity and inventory.
 # Passing admission/mining alone must never count as a successful pickup.
