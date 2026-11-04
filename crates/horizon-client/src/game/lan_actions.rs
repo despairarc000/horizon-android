@@ -1563,6 +1563,20 @@ impl Game<'_> {
         match packet {
             S::PlayerAction(a) => match a.action {
                 0 => {
+                    // Opt-in, local-only diagnosis of real player mining.
+                    // Do not interpret a submitted packet as an accepted dig.
+                    if host.experimental_bots.is_some()
+                        && host.hub.guests[gi].name.starts_with("EcoAI")
+                    {
+                        let guest = &host.hub.guests[gi];
+                        log::info!(
+                            "Offline ecosystem {}: server mining START target={:?} in_reach={} spawn_protected={} inside_border={} spectator={}",
+                            guest.name, a.pos, guest.may_reach_block(a.pos),
+                            self.under_spawn_protection(host, gi, a.pos),
+                            self.border.contains(f64::from(a.pos[0]), f64::from(a.pos[2])),
+                            spectator
+                        );
+                    }
                     host.hub.ack(conn, a.sequence);
                     if spectator {
                         return;
@@ -4071,6 +4085,18 @@ impl Game<'_> {
             play.dig_ended();
             stop_dig(play, pos, air, ticks, per_tick)
         };
+        if host.experimental_bots.is_some()
+            && let Some(guest) = host.hub.guests.iter().find(|g| g.conn == conn)
+            && guest.name.starts_with("EcoAI")
+        {
+            log::info!(
+                "Offline ecosystem {}: server mining STOP target={:?} elapsed_ticks={:?} progress_per_tick={:.5} decision={:?} is_air={}",
+                guest.name, pos, host.play.get(&conn)
+                    .and_then(|p| p.dig_start_for(pos))
+                    .map(|start| ticks.saturating_sub(start)),
+                per_tick, decision, air
+            );
+        }
         match decision {
             StopDig::Other => {}
             // Already broken (the guest's own tick dug it out): only the crack goes.
