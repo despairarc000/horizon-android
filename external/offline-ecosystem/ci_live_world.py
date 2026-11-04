@@ -247,7 +247,8 @@ def item_pickup_report(lines: list[str]) -> dict[str, int]:
 
 
 DOWNHILL_ATTEMPT = re.compile(
-    r"Offline ecosystem (EcoAI[01]): attempting normal downhill movement to verified surface"
+    r"Offline ecosystem (EcoAI[01]): "
+    r"(?:attempting normal downhill movement to|exploring downhill toward) verified surface"
 )
 DOWNHILL_CONFIRMED = re.compile(
     r"Offline ecosystem (EcoAI[01]): server-authoritative downhill landing"
