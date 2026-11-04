@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ci_live_world import (
     check_events, terrain_report, steering_report, server_mining_report,
-    server_destroy_report, item_pickup_report, downhill_report, uphill_report, blocked_pickup_report, harvest_access_report, vertical_cycle_report, confirm_observed_exploration,
+    server_destroy_report, item_pickup_report, downhill_report, uphill_report, blocked_pickup_report, harvest_access_report, vertical_cycle_report, wood_inventory_gain_report, confirm_observed_exploration,
 )
 
 def login(name, eid):
@@ -188,6 +188,23 @@ class UphillMotionTests(unittest.TestCase):
         self.assertEqual(counts["rejected_uphill_packets"],1)
         self.assertEqual(counts["invalid_uphill_arcs"],1)
         self.assertEqual(uphill_report(lines[:2])["server_confirmed_uphill_landings"],0)
+
+class StrictHarvestEvidenceTests(unittest.TestCase):
+    def test_only_correlated_real_inventory_gains_count(self):
+        lines=[
+            "Offline ecosystem EcoAI0: server destroy drop_entities=1 sample=minecraft:dark_oak_log@1,64,0",
+            "Offline ecosystem EcoAI0: exact server block observation confirmed target no longer log at [1, 64, 0]",
+            "Offline ecosystem EcoAI1: correlated log removal and real inventory gain +1 at [2, 64, 0]",
+            "Offline ecosystem EcoAI1: correlated log removal and real inventory gain +2 at [3, 65, 0]",
+            "Offline ecosystem EcoAI0: mining attempt started at [3, 65, 0] access_rank=0",
+        ]
+        self.assertEqual(wood_inventory_gain_report(lines),{
+            "EcoAI0":0,"EcoAI1":3,
+        })
+        self.assertEqual(wood_inventory_gain_report([]),{
+            "EcoAI0":0,"EcoAI1":0,
+        })
+
 
 class VerticalLoopEvidenceTests(unittest.TestCase):
     def test_repeated_actual_landings_are_not_counted_as_exploration(self):
