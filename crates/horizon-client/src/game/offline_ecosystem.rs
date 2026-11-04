@@ -470,6 +470,16 @@ fn exploratory_uphill_step(
     first_terrain_step(start,&higher,&safe)
 }
 
+/// Avoid compulsive vertical traversal just because a visible tree is
+/// inaccessible. Exhaust connected flat ground first, then seek a safe
+/// vertical connection; missing/unloaded cells are not counted as explored.
+fn should_seek_vertical(
+    blocked_wood:bool,flat_exhausted:bool,
+    has_flat_step:bool,ground_tile_count:usize,
+)->bool{
+    !has_flat_step || (flat_exhausted && (blocked_wood || ground_tile_count<=3))
+}
+
 /// A server-published player location is only a *landing* if its
 /// ground-contact flag is set and the current collision survey still proves
 /// the intended destination has physical support and body clearance.
@@ -1270,17 +1280,19 @@ fn run_local(
             let flat_step=exploration.choose_next(
                 at,&survey.ground,survey.tick,index as u32
             );
-            // If wood is visible but none is physically approachable,
-            // explore for a downhill connection instead of oscillating
-            // indefinitely among a few familiar flat tiles. The server
-            // already supplied only loaded, supported, dry standing cells.
+            // A real visible but uncollectible trunk is a reason to
+            // LOOK FOR access, not a reason to jump up and down forever.
+            // Prefer unvisited *connected* flat ground before searching for
+            // a vertical route. Disconnected or unknown cells do not block
+            // this local exhaustion test.
             let blocked_wood=!survey.logs.is_empty() && survey.nearby_log.is_none();
-            // visited_count only grows, so using it as a permanent trigger
-            // causes repeated up/down oscillation even on useful flat
-            // routes. Prefer normal exploration whenever it is available.
-            let seek_vertical=blocked_wood
-                || survey.ground.len()<=3
-                || flat_step.is_none();
+            let flat_exhausted=exploration.locally_exhausted(
+                at,&survey.ground,survey.tick
+            );
+            let seek_vertical=should_seek_vertical(
+                blocked_wood,flat_exhausted,flat_step.is_some(),
+                survey.ground.len()
+            );
             let current=[
                 survey.position[0].floor() as i32,
                 survey.position[1].floor() as i32,
@@ -1593,6 +1605,15 @@ mod tests{
         assert_eq!(exploratory_downhill_step(&survey,
             m.avoid_immediate_return(b,220)),
             Some(RouteStep{at:a,motion:RouteMotion::StepDown}));
+    }
+    #[test]
+    fn inaccessible_wood_does_not_force_vertical_motion_before_flat_search(){
+        assert!(!should_seek_vertical(true,false,true,10));
+        assert!(should_seek_vertical(true,true,true,10));
+        assert!(should_seek_vertical(false,true,true,2));
+        assert!(!should_seek_vertical(false,false,true,2));
+        assert!(should_seek_vertical(false,false,false,10));
+        assert!(!should_seek_vertical(false,true,true,20));
     }
     #[test]
     fn repeated_vertical_landings_cannot_trap_explorer_in_short_loop(){
