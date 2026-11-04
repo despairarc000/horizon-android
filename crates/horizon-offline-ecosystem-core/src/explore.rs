@@ -1,67 +1,142 @@
 //! Memory-driven exploration across locally observed, server-approved ground.
+//! A transport packet is only an attempted move; authoritative position samples
+//! determine whether an attempted step made physical progress.
 //! No waypoints supplied by the user, no global map, no fake player movement.
-//! Cells learned beyond the current 7x7 world survey cannot be traversed.
 use std::collections::BTreeMap;
 use crate::local_path::first_ground_step;
 
-pub const MAX_VISITED_TILES:usize=256;
-#[derive(Debug,Clone,Default,PartialEq,Eq)]
+pub const MAX_VISITED_TILES: usize = 256;
+pub const MAX_BLOCKED_STEPS: usize = 16;
+pub const BLOCKED_STEP_TICKS: u64 = 240;
+pub const STALLED_SURVEYS: u8 = 4;
+const PROGRESS_SQUARED: f64 = 0.10 * 0.10;
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExplorationMemory {
-    visited:BTreeMap<[i32;2],u64>,
-    target:Option<[i32;2]>,
+    visited: BTreeMap<[i32; 2], u64>,
+    target: Option<[i32; 2]>,
+    blocked_steps: BTreeMap<[i32; 2], u64>,
+    last_sample: Option<(u64, [f64; 2])>,
+    attempted_step: Option<[i32; 2]>,
+    stagnant_surveys: u8,
 }
+
 impl ExplorationMemory {
-    pub fn new()->Self{Self::default()}
-    pub fn visited_count(&self)->usize{self.visited.len()}
-    pub fn selected_target(&self)->Option<[i32;2]>{self.target}
-    fn visited(&mut self,pos:[i32;2],tick:u64){
-        if !self.visited.contains_key(&pos) && self.visited.len()>=MAX_VISITED_TILES{
-            if let Some(oldest)=self.visited.iter()
-                .min_by_key(|(cell,last)|(**last,**cell))
-                .map(|(key,_)|*key)
+    pub fn new() -> Self { Self::default() }
+    pub fn visited_count(&self) -> usize { self.visited.len() }
+    pub fn selected_target(&self) -> Option<[i32; 2]> { self.target }
+    pub fn blocked_count(&self) -> usize { self.blocked_steps.len() }
+
+    fn visited(&mut self, pos: [i32; 2], tick: u64) {
+        if !self.visited.contains_key(&pos) && self.visited.len() >= MAX_VISITED_TILES {
+            if let Some(oldest) = self.visited.iter()
+                .min_by_key(|(cell, last)| (**last, **cell))
+                .map(|(key, _)| *key)
             {
                 self.visited.remove(&oldest);
             }
         }
-        self.visited.insert(pos,tick);
+        self.visited.insert(pos, tick);
     }
-    /// Choose an adjacent safe step toward an unvisited, actually reachable
-    /// ground tile. Individual salt breaks tie patterns, not by inventing
-    /// information: all candidates come from the real server survey.
-    pub fn choose_next(
-        &mut self,start:[i32;2],safe:&[[i32;2]],tick:u64,individual_salt:u32
-    )->Option<[i32;2]>{
-        if !safe.contains(&start){
-            self.target=None;
+
+    /// This must be called only after a REAL movement packet was submitted.
+    /// A path proposal, rejected packet, or unconfirmed local prediction is
+    /// not evidence that a movement attempt happened.
+    pub fn attempted_step(&mut self, waypoint: [i32; 2]) {
+        self.attempted_step = Some(waypoint);
+    }
+
+    /// Observe a *new* authoritative server position, not the bot's locally
+    /// predicted position. Four stagnant surveys after submitted packets
+    /// quarantine the attempted next tile temporarily. No movement at all
+    /// does not cause a false obstacle. Returns the newly quarantined tile.
+    pub fn observe_server_position(
+        &mut self, tick: u64, position: [f64; 2],
+    ) -> Option<[i32; 2]> {
+        if !position.iter().all(|v| v.is_finite()) {
             return None;
         }
-        self.visited(start,tick);
-        if self.target==Some(start){self.target=None;}
-        if let Some(target)=self.target{
-            if let Some(step)=first_ground_step(start,&[target],safe){
+        if self.last_sample.is_some_and(|(previous_tick, _)| tick <= previous_tick) {
+            return None;
+        }
+
+        self.blocked_steps.retain(|_, until| *until > tick);
+        let mut blocked = None;
+        if let Some((_, previous)) = self.last_sample {
+            let dx = position[0] - previous[0];
+            let dz = position[1] - previous[1];
+            if dx * dx + dz * dz >= PROGRESS_SQUARED {
+                self.stagnant_surveys = 0;
+            } else if self.attempted_step.is_some() {
+                self.stagnant_surveys = self.stagnant_surveys.saturating_add(1);
+                if self.stagnant_surveys >= STALLED_SURVEYS {
+                    let step = self.attempted_step.expect("attempt was checked");
+                    if self.blocked_steps.len() >= MAX_BLOCKED_STEPS {
+                        if let Some(oldest) = self.blocked_steps.iter()
+                            .min_by_key(|(pos, until)| (**until, **pos))
+                            .map(|(pos, _)| *pos)
+                        {
+                            self.blocked_steps.remove(&oldest);
+                        }
+                    }
+                    self.blocked_steps.insert(step, tick.saturating_add(BLOCKED_STEP_TICKS));
+                    self.target = None;
+                    self.stagnant_surveys = 0;
+                    blocked = Some(step);
+                }
+            } else {
+                self.stagnant_surveys = 0;
+            }
+        }
+
+        self.last_sample = Some((tick, position));
+        self.attempted_step = None;
+        blocked
+    }
+
+    /// Choose a first cardinal step toward an observed reachable tile.
+    /// Temporarily blocked steps cannot be used as transit cells, not just
+    /// final destinations. This prevents retrying the same failed edge.
+    pub fn choose_next(
+        &mut self, start: [i32; 2], safe: &[[i32; 2]],
+        tick: u64, individual_salt: u32,
+    ) -> Option<[i32; 2]> {
+        self.blocked_steps.retain(|_, until| *until > tick);
+        if !safe.contains(&start) {
+            self.target = None;
+            return None;
+        }
+        self.visited(start, tick);
+        if self.target == Some(start) { self.target = None; }
+        let unblocked: Vec<[i32; 2]> = safe.iter().copied()
+            .filter(|p| *p == start || !self.blocked_steps.contains_key(p))
+            .collect();
+
+        if let Some(target) = self.target {
+            if let Some(step) = first_ground_step(start, &[target], &unblocked) {
                 return Some(step);
             }
-            self.target=None;
+            self.target = None;
         }
-        let mut best=None;
-        for &tile in safe{
-            if tile==start{continue;}
-            let Some(first)=first_ground_step(start,&[tile],safe) else{continue;};
-            let previous=self.visited.get(&tile);
-            let unseen=u8::from(previous.is_none());
-            let old=previous.map_or(u64::MAX,|last|tick.saturating_sub(*last));
-            let dx=i64::from(tile[0])-i64::from(start[0]);
-            let dz=i64::from(tile[1])-i64::from(start[1]);
-            let distance=dx.unsigned_abs()+dz.unsigned_abs();
-            let tie=(i64::from(tile[0])*37+i64::from(tile[1])*17
-                +i64::from(individual_salt)).rem_euclid(1024);
-            let score=(unseen,old,distance,tie);
-            if best.as_ref().is_none_or(|(b,_,_)|score>*b){
-                best=Some((score,tile,first));
+        let mut best = None;
+        for &tile in &unblocked {
+            if tile == start { continue; }
+            let Some(first) = first_ground_step(start, &[tile], &unblocked) else { continue; };
+            let previous = self.visited.get(&tile);
+            let unseen = u8::from(previous.is_none());
+            let old = previous.map_or(u64::MAX, |last| tick.saturating_sub(*last));
+            let dx = i64::from(tile[0]) - i64::from(start[0]);
+            let dz = i64::from(tile[1]) - i64::from(start[1]);
+            let distance = dx.unsigned_abs() + dz.unsigned_abs();
+            let tie = (i64::from(tile[0]) * 37 + i64::from(tile[1]) * 17
+                + i64::from(individual_salt)).rem_euclid(1024);
+            let score = (unseen, old, distance, tie);
+            if best.as_ref().is_none_or(|(b, _, _)| score > *b) {
+                best = Some((score, tile, first));
             }
         }
-        if let Some((_,destination,first))=best{
-            self.target=Some(destination);
+        if let Some((_, destination, first)) = best {
+            self.target = Some(destination);
             return Some(first);
         }
         None
@@ -69,35 +144,113 @@ impl ExplorationMemory {
 }
 
 #[cfg(test)]
-mod tests{
+mod tests {
     use super::*;
-    #[test]fn explores_beyond_initial_spawn_neighborhood(){
-        let mut e=ExplorationMemory::new();
-        let mut at=[0,0];
+
+    #[test]
+    fn explores_beyond_initial_spawn_neighborhood() {
+        let mut e = ExplorationMemory::new();
+        let mut at = [0, 0];
         for tick in 1..=35 {
-            let safe:Vec<_>=(-3..=3).flat_map(|x|(-3..=3).map(move|z|[at[0]+x,at[1]+z])).collect();
-            if let Some(next)=e.choose_next(at,&safe,tick,2){at=next;}
+            let safe: Vec<_> = (-3..=3).flat_map(|x|
+                (-3..=3).map(move |z| [at[0] + x, at[1] + z])).collect();
+            if let Some(next) = e.choose_next(at, &safe, tick, 2) { at = next; }
         }
-        assert!(at[0].abs()+at[1].abs()>=5,"explorer never left spawn");
-        assert!(e.visited_count()>6,"explorer never discovered new cells");
+        assert!(at[0].abs() + at[1].abs() >= 5, "explorer never left spawn");
+        assert!(e.visited_count() > 6, "explorer never discovered new cells");
     }
-    #[test]fn never_treats_unobserved_terrain_as_safe(){
-        let mut e=ExplorationMemory::new();
-        assert_eq!(e.choose_next([0,0],&[[0,0],[2,0]],1,0),None);
-        assert_eq!(e.choose_next([0,0],&[[0,0],[1,0],[2,0]],2,0),Some([1,0]));
+
+    #[test]
+    fn never_treats_unobserved_terrain_as_safe() {
+        let mut e = ExplorationMemory::new();
+        assert_eq!(e.choose_next([0, 0], &[[0, 0], [2, 0]], 1, 0), None);
+        assert_eq!(e.choose_next([0, 0], &[[0, 0], [1, 0], [2, 0]], 2, 0), Some([1, 0]));
     }
-    #[test]fn avoids_infinite_revisits_with_a_memory_cap(){
-        let mut e=ExplorationMemory::new();
-        for i in 0..330{
-            e.choose_next([i,0],&[[i,0]],i as u64,0);
+
+    #[test]
+    fn avoids_infinite_revisits_with_a_memory_cap() {
+        let mut e = ExplorationMemory::new();
+        for i in 0..330 {
+            e.choose_next([i, 0], &[[i, 0]], i as u64, 0);
         }
-        assert_eq!(e.visited_count(),MAX_VISITED_TILES);
+        assert_eq!(e.visited_count(), MAX_VISITED_TILES);
     }
-    #[test]fn distinct_salts_do_not_change_observed_safety(){
-        for salt in 0..8{
-            let mut e=ExplorationMemory::new();
-            let safe=[[0,0],[1,0],[0,1]];
-            assert!(safe.contains(&e.choose_next([0,0],&safe,1,salt).unwrap()));
+
+    #[test]
+    fn distinct_salts_do_not_change_observed_safety() {
+        for salt in 0..8 {
+            let mut e = ExplorationMemory::new();
+            let safe = [[0, 0], [1, 0], [0, 1]];
+            assert!(safe.contains(&e.choose_next([0, 0], &safe, 1, salt).unwrap()));
         }
+    }
+
+    #[test]
+    fn stationary_server_position_quarantines_only_attempted_step() {
+        let mut e = ExplorationMemory::new();
+        let safe = [[0, 0], [1, 0], [0, 1]];
+        e.observe_server_position(1, [0.5, 0.5]);
+        for tick in [9, 17, 25, 33] {
+            e.attempted_step([1, 0]);
+            let quarantined = e.observe_server_position(tick, [0.5, 0.5]);
+            assert_eq!(quarantined, (tick == 33).then_some([1, 0]));
+        }
+        assert_eq!(e.blocked_count(), 1);
+        assert_eq!(e.choose_next([0, 0], &safe, 34, 0), Some([0, 1]));
+        assert_eq!(e.blocked_count(), 1);
+        assert_eq!(e.choose_next([0, 0], &safe, 274, 0).is_some(), true);
+        assert_eq!(e.blocked_count(), 0);
+    }
+
+    #[test]
+    fn legitimate_progress_resets_stall_and_idle_never_blocks() {
+        let mut e = ExplorationMemory::new();
+        e.observe_server_position(1, [0.5, 0.5]);
+        for tick in [9, 17, 25] {
+            e.attempted_step([1, 0]);
+            assert_eq!(e.observe_server_position(tick, [0.5, 0.5]), None);
+        }
+        e.attempted_step([1, 0]);
+        assert_eq!(e.observe_server_position(33, [0.7, 0.5]), None);
+        for tick in [41, 49, 57, 65] {
+            assert_eq!(e.observe_server_position(tick, [0.7, 0.5]), None);
+        }
+        assert_eq!(e.blocked_count(), 0);
+    }
+
+    #[test]
+    fn rejects_duplicate_and_invalid_surveys_without_false_failure() {
+        let mut e = ExplorationMemory::new();
+        e.observe_server_position(1, [0.5, 0.5]);
+        e.attempted_step([1, 0]);
+        assert_eq!(e.observe_server_position(1, [0.5, 0.5]), None);
+        assert_eq!(e.observe_server_position(2, [f64::NAN, 0.5]), None);
+        assert_eq!(e.observe_server_position(9, [0.5, 0.5]), None);
+        assert_eq!(e.blocked_count(), 0);
+    }
+
+    #[test]
+    fn does_not_route_through_quarantined_tile() {
+        let mut e = ExplorationMemory::new();
+        let safe = [[0, 0], [1, 0], [2, 0]];
+        e.observe_server_position(1, [0.5, 0.5]);
+        for tick in [9, 17, 25, 33] {
+            e.attempted_step([1, 0]);
+            e.observe_server_position(tick, [0.5, 0.5]);
+        }
+        assert_eq!(e.choose_next([0, 0], &safe, 34, 0), None);
+    }
+
+    #[test]
+    fn blocked_step_memory_is_bounded() {
+        let mut e = ExplorationMemory::new();
+        for i in 0..30 {
+            e.observe_server_position((i * 48 + 1) as u64, [0.5, 0.5]);
+            for j in 1..=4 {
+                e.attempted_step([i + 1, 0]);
+                e.observe_server_position((i * 48 + 1 + j * 8) as u64, [0.5, 0.5]);
+            }
+        }
+        assert!(e.blocked_count() <= MAX_BLOCKED_STEPS);
     }
 }
