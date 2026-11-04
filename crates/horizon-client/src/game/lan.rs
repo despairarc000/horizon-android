@@ -2354,6 +2354,16 @@ impl Game<'_> {
         self.lan_sync_scoreboard(&mut host);
         self.lan_sync_border(&mut host);
         host.hub.anticheat_ping();
+        if !paused {
+            if let Some(bots)=&mut host.experimental_bots {
+                bots.survey(&host.hub.guests, self.dim.id(), |position|{
+                    let [x,y,z]=position;
+                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return false;}
+                    let name=&self.res.facts().get(self.world.block(x,y,z)).name;
+                    name.ends_with("_log") || name.ends_with("_stem")
+                });
+            }
+        }
         drop(holding);
         self.flush_native_net(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));

@@ -33,3 +33,9 @@ Keep experimental code isolated; use public-source-only tests. Keep core standal
 ## Resource-free real networking test
 
 The Android fork has `SyncData::empty()` available during its own library unit tests. The new `offline_ecosystem_local_player_joins_real_lan_without_resources` test instantiates Horizon's **actual** `Lan::start_with`, calls `connect_local`, completes a full local login and configuration with the ecosystem client, then verifies the real LAN raises a joined event. It does not instantiate the Minecraft world. The separate `lan_bot.rs` hub/world test still needs prepared game assets.
+
+## Authoritative sensor bridge (prototype)
+
+An opt-in `ExperimentalBots` coordinator now scans a limited 7x4x7 **loaded-block neighborhood** of each real connected guest every eight server ticks. It sends only server position, actual health, actual hunger, and a nearby log coordinate over a capacity-one nonblocking channel to its corresponding headless bot. The bot uses `ecosystem_core::choose_intent` and tries short level-ground steering toward wood, otherwise exploring a small local waypoint path.
+
+This is an intentionally incomplete prototype: it does not yet do raycast visibility, full voxel navigation, reach-certified mining, inventory observation, crafting, combat, shelter building, social contact or population realization. Core `Needs::energy` is set to 100 rather than inventing a Minecraft stamina mechanic. Background workers have no access to full world state. Never interpret a steering attempt as confirmed movement; the next authoritative survey reconciles position.

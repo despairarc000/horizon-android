@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Real Horizon in-memory LAN login without Minecraft assets
-        run: cargo test -p horizon-client --no-default-features --lib offline_ecosystem_ -- --nocapture
+        run: cargo test -p horizon-client --no-default-features --lib offline_ecosystem -- --nocapture
       - name: Compile Horizon LAN and local bot integration
         run: cargo test -p horizon-client --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
       - name: Typecheck experimental in-game integration
