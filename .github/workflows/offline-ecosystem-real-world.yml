@@ -55,6 +55,8 @@ jobs:
         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
       - name: Assert server-authoritative movement and real block action
         run: cargo test -p horizon-client --locked --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
+      - name: Test memory-driven exploration and evidence accounting
+        run: cargo test --locked -p horizon-offline-ecosystem-core
       - name: Build test game binary
         run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
       - name: Exercise two real loaded bot players (event-based acceptance)
