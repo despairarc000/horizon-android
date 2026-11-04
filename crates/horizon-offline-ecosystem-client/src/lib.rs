@@ -264,10 +264,28 @@ impl LocalPlayer {
                                 if i<menu.slots.len(){
                                     menu.slots[i]=p.item;
                                     menu.revision=p.state;
-                                    self.menu_click_pending=false;
+                                    // The server sends its cursor correction
+                                    // *after* slot corrections. Do not begin
+                                    // another click with a stale carried stack.
+
                                 }
                             }
                         }
+                    }
+                } else {
+                    self.inventory_menu=None;
+                    self.menu_click_pending=false;
+                }
+            },
+            cb::SET_CURSOR_ITEM=>{
+                if let Ok(play::Clientbound::SetCursorItem(p))=
+                    play::Clientbound::decode(id,body)
+                {
+                    if let Some(menu)=self.inventory_menu.as_mut(){
+                        menu.carried=p.item;
+                        // Player inventory click corrections are emitted
+                        // after the corresponding changed-slot packets.
+                        self.menu_click_pending=false;
                     }
                 } else {
                     self.inventory_menu=None;
