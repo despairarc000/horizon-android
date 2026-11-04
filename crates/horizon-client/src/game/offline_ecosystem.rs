@@ -47,6 +47,10 @@ struct Survey {
     ground: Vec<[i32;2]>,
     /// Up to 363 server-verified 11x11x3 standing surfaces for routing.
     terrain: Vec<[i32;3]>,
+    /// Real log cells whose verified support and airspace would become a
+    /// valid standing surface AFTER this exact log is removed. This is only
+    /// a provisional route goal, never a currently walkable block.
+    clearable_stands: Vec<[i32;3]>,
     /// At most 32 nearby real server blocks within a 13x13 search.
     /// Only loaded cells; not yet an occlusion-aware view.
     logs: Vec<[i32; 3]>,
@@ -279,11 +283,35 @@ fn predicted_pickup_stands(survey:&Survey,log:[i32;3])->usize{
     if goals.is_empty() {return 0;}
     if pickup_route_to_log(survey,log).is_some() {goals.len()} else {0}
 }
+/// Only a real server-observed log with solid floor support and clear body
+/// space above may become a safe new standing position after removal.
+fn cleared_log_route(survey:&Survey,log:[i32;3])->Option<RouteStep>{
+    if !survey.clearable_stands.contains(&log){return None;}
+    let start=[
+        survey.position[0].floor() as i32,
+        survey.position[1].floor() as i32,
+        survey.position[2].floor() as i32,
+    ];
+    // A hypothetical stand can be used as a GOAL after a successful break,
+    // never as a currently executable route or an item pickup credit.
+    let mut after=survey.terrain.clone();
+    if after.len()>=ecosystem_core::terrain_path::MAX_KNOWN_STANDS {return None;}
+    after.push(log);
+    first_walk_down_step(start,&[log],&after)
+        .or_else(||first_terrain_step(start,&[log],&after))
+}
+/// Zero: currently connected pickup stand, one: opening a new supported stand
+/// by breaking this observed log, two: no currently evidenced pickup access.
+/// The lowest rank wins; all blocks are still subject to server permissions.
+fn harvest_access_rank(survey:&Survey,log:[i32;3])->u8{
+    if predicted_pickup_stands(survey,log)>0{0}
+    else if cleared_log_route(survey,log).is_some(){1}
+    else{2}
+}
 fn prioritize_collectible_logs(logs:&mut [[i32;3]], survey:&Survey){
-    // Cache the bounded path computation once per candidate instead of
-    // recomputing BFS during each sort comparison. Preserve prior ordering
-    // among equally accessible real resources.
-    logs.sort_by_cached_key(|log|predicted_pickup_stands(survey,*log)==0);
+    // One cached key per bounded candidate; stable ties retain the original
+    // nearest/highest ordering and avoid pathfinding in each comparison.
+    logs.sort_by_cached_key(|log|harvest_access_rank(survey,*log));
 }
 
 /// The next ground tile on a real obstacle-aware, local route to a log.
@@ -582,9 +610,9 @@ impl ExperimentalBots {
     /// probes nearby logs, but is NOT visual line-of-sight perception yet;
     /// occluded blocks in that radius may be discovered. Never scan an
     /// unloaded chunk, never synthesize a block or resource.
-    pub(super) fn survey<F,G,H,J>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G,mut is_standable:H,mut item_positions:J)
+    pub(super) fn survey<F,G,H,J,K>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G,mut is_standable:H,mut item_positions:J,mut clearable_log:K)
     where F: FnMut([i32;3])->Option<bool>, G: FnMut(&str)->bool,H:FnMut([i32;3])->bool,
-        J:FnMut([f64;3])->Vec<[f64;3]>
+        J:FnMut([f64;3])->Vec<[f64;3]>,K:FnMut([i32;3])->bool
     {
         self.survey_ticks+=1;
         if self.survey_ticks%8!=0{return;}
@@ -597,6 +625,8 @@ impl ExperimentalBots {
             if !pos.iter().all(|x|x.is_finite()){continue;}
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
             let logs=log_candidates(center,|here|is_log(here)==Some(true));
+            let clearable_stands:Vec<_>=logs.iter().copied()
+                .filter(|&pos|clearable_log(pos)).collect();
             let terrain=terrain_candidates(center,&mut is_standable);
             let ground:Vec<[i32;2]>=terrain.iter()
                 .filter(|p|p[1]==center[1])
@@ -639,6 +669,7 @@ impl ExperimentalBots {
                 watched_log,
                 ground,
                 terrain,
+                clearable_stands,
                 logs,
                 wood_drops,
             });
@@ -772,6 +803,11 @@ fn run_local(
             prefer_pickup_height(&mut walkable_height,received.position);
             walkable_height.retain(|&log|can_approach_log(&received,log));
             prioritize_collectible_logs(&mut walkable_height,&received);
+            // Don't sacrifice additional trunks merely because they are
+            // within mining reach. Only a connected pickup stand or a
+            // server-verified post-break clearance can justify this task.
+            // Otherwise explore until another real resource is approachable.
+            walkable_height.retain(|&log|harvest_access_rank(&received,log)<2);
             // Only real, server-observed positions count as movement progress.
             // A remembered target can be investigated, but not treated as
             // confirmed still-existing or credited with any item rewards.
@@ -1145,9 +1181,10 @@ fn run_local(
                             blocked_pickup_surveys=0;
                             if let Ok(mut target)=watched_target.lock(){*target=Some(log);}
                             log::info!(
-                                "Offline ecosystem {name}: mining attempt started at {:?} connected_pickup_stands={} pickup_route={:?}",
-                                log,predicted_pickup_stands(survey,log),
-                                pickup_route_to_log(survey,log)
+                                "Offline ecosystem {name}: mining attempt started at {:?} access_rank={} connected_pickup_stands={} cleared_log_route={:?} pickup_route={:?}",
+                                log,harvest_access_rank(survey,log),
+                                predicted_pickup_stands(survey,log),
+                                cleared_log_route(survey,log),pickup_route_to_log(survey,log)
                             );
                         } else {
                             // Tried twice without a confirmed block removal.
@@ -1261,7 +1298,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
             wood_drops:vec![[2.6,64.1,0.5]],ground:vec![[0,0],[1,0],[2,0]],
-            terrain:vec![[0,64,0],[1,64,0],[2,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[1,64,0],[2,64,0]],
         };
         assert_eq!(watched_wood_drop(&survey,[2,64,0]),Some([2.6,64.1,0.5]));
         assert_eq!(ground_step_to_drop(&survey,[2.6,64.1,0.5]),Some([1.5,0.5]));
@@ -1278,7 +1315,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
             wood_drops:vec![[2.5,64.15,0.5]],
-            ground:vec![[0,0]],terrain:vec![[0,65,0],[1,64,0],[2,64,0]],
+            ground:vec![[0,0]],clearable_stands:vec![],terrain:vec![[0,65,0],[1,64,0],[2,64,0]],
         };
         assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
@@ -1298,7 +1335,7 @@ mod tests{
             tick:0,on_ground:true,position:[0.5,65.0,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
-            ground:vec![[0,0],[0,1],[0,2],[1,2],[2,2]],terrain:safe,
+            ground:vec![[0,0],[0,1],[0,2],[1,2],[2,2]],clearable_stands:vec![],terrain:safe,
         };
         assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),
             Some(RouteStep{at:[0,65,1],motion:RouteMotion::Walk}));
@@ -1311,7 +1348,7 @@ mod tests{
             nearby_log:None,watched_log:None,logs:vec![],
             wood_drops:vec![[5.5,64.15,0.5]],
             ground:vec![[0,0],[1,0]],
-            terrain:vec![[0,65,0],[1,65,0],[2,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,65,0],[1,65,0],[2,64,0]],
         };
         assert_eq!(terrain_step_to_drop(&survey,[5.5,64.15,0.5]),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
@@ -1335,7 +1372,7 @@ mod tests{
             on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,ground:vec![[0,0]], logs:vec![],
-            wood_drops:vec![],terrain:vec![[0,64,0]],
+            wood_drops:vec![],clearable_stands:vec![],terrain:vec![[0,64,0]],
         };
         assert_eq!(decide(&survey,0),Intent::Explore);
         survey.nearby_log=Some([1,64,0]);
@@ -1353,7 +1390,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
             wood_drops:vec![],ground:vec![[0,0]],
-            terrain:vec![[0,65,0],[1,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,65,0],[1,64,0]],
         };
         assert!(!can_approach_log(&survey,[5,65,0]));
         assert!(can_approach_log(&survey,[1,65,0]));
@@ -1373,7 +1410,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([3,65,0]),watched_log:None,
             logs:vec![[3,65,0]],wood_drops:vec![],
-            ground:vec![[0,0]],terrain:vec![[0,64,0],[1,65,0],[2,65,0]],
+            ground:vec![[0,0]],clearable_stands:vec![],terrain:vec![[0,64,0],[1,65,0],[2,65,0]],
         };
         assert_eq!(terrain_step_to_log(&survey,[3,65,0]),Some(
             RouteStep{at:[1,65,0],motion:RouteMotion::JumpUp}
@@ -1389,7 +1426,7 @@ mod tests{
             nearby_log:Some([4,64,0]),watched_log:None,
             logs:vec![[4,64,0]],wood_drops:vec![],
             ground:vec![[0,0]],
-            terrain:vec![[0,65,0],[1,64,0],[2,64,0],[3,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,65,0],[1,64,0],[2,64,0],[3,64,0]],
         };
         assert_eq!(ground_step_to_log(&survey,[4,64,0]),None);
         assert_eq!(terrain_step_to_log(&survey,[4,64,0]),
@@ -1408,7 +1445,7 @@ mod tests{
             nearby_log:Some([5,64,0]),watched_log:None,
             logs:vec![[5,64,0]],wood_drops:vec![],
             ground:vec![[0,0],[1,0]],
-            terrain:vec![[0,65,0],[1,65,0],[2,64,0],[3,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,65,0],[1,65,0],[2,64,0],[3,64,0]],
         };
         assert_eq!(terrain_step_to_log(&survey,[5,64,0]),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
@@ -1420,7 +1457,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![[4,65,0]],
             wood_drops:vec![],ground:vec![[0,0],[1,0],[2,0],[3,0]],
-            terrain:vec![[0,65,0],[1,65,0],[2,65,0],
+            clearable_stands:vec![],terrain:vec![[0,65,0],[1,65,0],[2,65,0],
                          [3,65,0],[3,64,1]],
         };
         assert!(!survey.logs.is_empty() && survey.nearby_log.is_none());
@@ -1437,7 +1474,7 @@ mod tests{
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
             logs:vec![],wood_drops:vec![],ground:vec![[1,0]],
-            terrain:vec![[1,65,0]],
+            clearable_stands:vec![],terrain:vec![[1,65,0]],
         };
         assert!(!server_confirmed_landing(&survey,[1,65,0]));
         survey.on_ground=true;
@@ -1455,7 +1492,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
             ground:vec![[0,0]],
-            terrain:vec![[0,64,0],[1,65,0]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[1,65,0]],
         };
         assert_eq!(exploratory_downhill_step(&survey,None),None);
         assert_eq!(exploratory_uphill_step(&survey,None),
@@ -1470,7 +1507,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
             ground:vec![[0,0],[1,0]],
-            terrain:vec![[0,64,0],[1,64,0],[2,65,0]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[1,64,0],[2,65,0]],
         };
         assert_eq!(exploratory_uphill_step(&survey,None),
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::Walk}));
@@ -1485,7 +1522,7 @@ mod tests{
             tick:101,on_ground:true,position:[1.5,65.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],wood_drops:vec![],
-            ground:vec![[1,0]],terrain:vec![a,b],
+            ground:vec![[1,0]],clearable_stands:vec![],terrain:vec![a,b],
         };
         assert_eq!(exploratory_downhill_step(&survey,None),
             Some(RouteStep{at:a,motion:RouteMotion::StepDown}));
@@ -1503,7 +1540,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
             wood_drops:vec![],ground:vec![[0,0],[1,0]],
-            terrain:vec![[0,65,0],[1,65,0],[2,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,65,0],[1,65,0],[2,64,0]],
         };
         assert_eq!(exploratory_downhill_step(&survey,None),
             Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
@@ -1516,7 +1553,7 @@ mod tests{
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
             ground:vec![[0,0],[1,0]],logs:vec![],
             wood_drops:vec![[3.5,64.0,0.5]],
-            terrain:vec![[0,64,0],[1,64,0],[3,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[1,64,0],[3,64,0]],
         };
         // Physically observed but disconnected items do not create paths.
         assert_eq!(scavengable_wood_route(&survey),None);
@@ -1536,7 +1573,7 @@ mod tests{
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
             ground:vec![[0,0]],logs:vec![],wood_drops:vec![[1.5,80.,0.5]],
-            terrain:vec![[0,81,0]],
+            clearable_stands:vec![],terrain:vec![[0,81,0]],
         };
         assert!(!has_surveyed_pickup_stand(&survey,[1.5,80.,0.5]));
         let mut evidence=HarvestEvidence::new([1,80,0],0,0);
@@ -1562,7 +1599,7 @@ mod tests{
             food:20,health:20.,food_inventory:0,wood_inventory:0,
             hotbar_food_slot:None,nearby_log:None,watched_log:None,
             ground:vec![[0,0]],logs:vec![[1,80,0],[2,81,0]],
-            terrain:vec![[0,81,0],[1,81,0],[1,81,1]],wood_drops:vec![],
+            clearable_stands:vec![],terrain:vec![[0,81,0],[1,81,0],[1,81,1]],wood_drops:vec![],
         };
         // Below-feet logs can be mined, but a settled drop at Y=80 is
         // lower than the pickup box of both current standing surfaces.
@@ -1580,13 +1617,51 @@ mod tests{
         assert_eq!(candidates,vec![[1,80,0],[2,81,0]]);
     }
     #[test]
+    fn conservative_cleared_log_route_requires_supported_body_space(){
+        let mut s=Survey{
+            tick:0,on_ground:true,position:[0.5,64.,0.5],health:20.,food:20,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,
+            ground:vec![[0,0],[1,0]],logs:vec![[2,63,0]],
+            wood_drops:vec![],terrain:vec![[0,64,0],[1,64,0]],
+            clearable_stands:vec![[2,63,0]],
+        };
+        // Same-height cells cannot pick up a drop that settles one block
+        // lower. Removing a verified log would open a supported descent.
+        assert_eq!(predicted_pickup_stands(&s,[2,63,0]),0);
+        assert_eq!(cleared_log_route(&s,[2,63,0]),Some(
+            RouteStep{at:[1,64,0],motion:RouteMotion::Walk}
+        ));
+        assert_eq!(harvest_access_rank(&s,[2,63,0]),1);
+        s.clearable_stands.clear();
+        assert_eq!(harvest_access_rank(&s,[2,63,0]),2);
+    }
+    #[test]
+    fn access_rank_prefers_collectible_then_clearable_then_inaccessible(){
+        let s=Survey{
+            tick:0,on_ground:true,position:[0.5,64.,0.5],health:20.,food:20,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,
+            ground:vec![[0,0],[1,0]],
+            logs:vec![[3,64,0],[2,63,0],[1,64,1]],
+            wood_drops:vec![],terrain:vec![[0,64,0],[1,64,0]],
+            clearable_stands:vec![[2,63,0]],
+        };
+        assert_eq!(harvest_access_rank(&s,[3,64,0]),2);
+        assert_eq!(harvest_access_rank(&s,[2,63,0]),1);
+        assert_eq!(harvest_access_rank(&s,[1,64,1]),0);
+        let mut logs=s.logs.clone();
+        prioritize_collectible_logs(&mut logs,&s);
+        assert_eq!(logs,vec![[1,64,1],[2,63,0],[3,64,0]]);
+    }
+    #[test]
     fn preharvest_position_is_reached_before_mining_from_the_edge_of_reach(){
         let survey=Survey{
             tick:0,on_ground:true,position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([2,64,0]),watched_log:None,logs:vec![[2,64,0]],
             wood_drops:vec![],ground:vec![[0,0],[1,0]],
-            terrain:vec![[0,64,0],[1,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[1,64,0]],
         };
         // This log is already within mining reach, but breaking it here
         // may leave its drop out of pickup range. First walk to the
@@ -1605,7 +1680,7 @@ mod tests{
             nearby_log:None,watched_log:None,
             logs:vec![[3,64,0],[1,64,0]],wood_drops:vec![],
             ground:vec![[0,0]],
-            terrain:vec![[0,64,0],[3,64,1]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[3,64,1]],
         };
         assert_eq!(prospective_pickup_stands(&survey,[3,64,0]),vec![[3,64,1]]);
         assert_eq!(pickup_route_to_log(&survey,[3,64,0]),None);
@@ -1623,7 +1698,7 @@ mod tests{
             nearby_log:Some([2,64,0]),watched_log:None,
             logs:vec![[2,64,0]],wood_drops:vec![],
             ground:vec![[0,0]],
-            terrain:vec![[0,65,0],[1,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,65,0],[1,64,0]],
         };
         assert_eq!(pickup_route_to_log(&survey,[2,64,0]),Some(
             RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}
@@ -1664,7 +1739,7 @@ mod tests{
             nearby_log:Some([6,64,0]),watched_log:None,
             ground:vec![[0,0],[1,0],[2,0],[3,0]],
             logs:vec![[6,64,0]],wood_drops:vec![],
-            terrain:vec![[0,64,0],[1,64,0],[2,64,0],[3,64,0]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[1,64,0],[2,64,0],[3,64,0]],
         };
         assert_eq!(ground_step_to_log(&s,[6,64,0]),Some([1.5,0.5]));
         // A disconnected tile near a tree does not become a magical path.
@@ -1729,7 +1804,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([3,64,0]),watched_log:None,logs:vec![[3,64,0]],
             wood_drops:vec![],ground:vec![[0,0],[0,1],[1,1],[2,1],[3,1]],
-            terrain:vec![[0,64,0],[0,64,1],[1,64,1],[2,64,1],[3,64,1]],
+            clearable_stands:vec![],terrain:vec![[0,64,0],[0,64,1],[1,64,1],[2,64,1],[3,64,1]],
         };
         assert_eq!(ground_step_to_log(&s,[3,64,0]),Some([0.5,1.5]));
         s.ground=vec![[0,0],[3,1]];
