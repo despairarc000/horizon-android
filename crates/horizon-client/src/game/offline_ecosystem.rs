@@ -487,6 +487,7 @@ fn run_local(
     // Only server-authoritative positions can confirm the final landing.
     let mut descent:Option<(StepDownController,u64)>=None;
     let mut descent_cooldown=0u64;
+    let mut last_route_report_tick=None;
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
         for mut received in rx.try_iter(){
@@ -639,22 +640,25 @@ fn run_local(
                     && (survey.position[2]-drop[2]).abs()<1.25;
                 let same_pickup_height=drop[1]>survey.position[1]-0.6
                     && drop[1]<survey.position[1]+2.4;
-                if same_pickup_height && !already_near {
-                    if let Some(waypoint)=ground_step_to_drop(survey,drop){
-                        steering.steer(&mut player,waypoint);
-                    }
-                } else if !same_pickup_height {
-                    // A 3D route is not proof the client can descend or
-                    // jump. Only execute an actual same-height WALK prefix.
+                let flat_route=if same_pickup_height && !already_near {
+                    ground_step_to_drop(survey,drop)
+                } else {None};
+                if let Some(waypoint)=flat_route {
+                    steering.steer(&mut player,waypoint);
+                } else if !already_near || !same_pickup_height {
+                    // Fall back to a verified 3D walk/down route when
+                    // the same-level path is disconnected, not just when
+                    // the item is below the player's current pickup box.
                     let candidate=terrain_step_to_drop(survey,drop);
-                    if survey.tick%160==0 {
+                    if survey.tick%160==0 && last_route_report_tick!=Some(survey.tick) {
+                        last_route_report_tick=Some(survey.tick);
                         let origin=[
                             survey.position[0].floor() as i32,
                             survey.position[1].floor() as i32,
                             survey.position[2].floor() as i32,
                         ];
                         let nearby_lower=survey.terrain.iter().filter(|p|
-                            p[1]==origin[1]-1
+                            i64::from(p[1])==i64::from(origin[1])-1
                             && (i64::from(p[0])-i64::from(origin[0])).abs()
                               +(i64::from(p[2])-i64::from(origin[2])).abs()==1
                         ).count();
