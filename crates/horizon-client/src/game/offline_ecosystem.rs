@@ -266,7 +266,12 @@ fn ground_step_to_log(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
 /// bot's current server-known ground. Otherwise the first visible tree can
 /// monopolize every decision even when it is behind a cliff or solid wall.
 fn can_approach_log(survey:&Survey,log:[i32;3])->bool{
-    if (survey.position[1]-f64::from(log[1])).abs()>=1.5{
+    // Survival players normally mine using an eye-height reach. A log two
+    // blocks above the feet can be legitimate and its drop may fall into
+    // the player's pickup box. Avoid mining two blocks BELOW unsupported
+    // feet, where the loot would be even less reachable.
+    let dy=f64::from(log[1])-survey.position[1];
+    if !(-1.5..=2.5).contains(&dy) {
         return false;
     }
     let dx=survey.position[0]-f64::from(log[0])-0.5;
@@ -557,7 +562,10 @@ fn run_local(
             // full vertical navigation remains unavailable.
             // This also prevents getting stuck forever targeting tall trees.
             let mut walkable_height:Vec<[i32;3]>=received.logs.iter().copied()
-                .filter(|p|(received.position[1]-f64::from(p[1])).abs()<1.5)
+                .filter(|p|{
+                    let dy=f64::from(p[1])-received.position[1];
+                    (-1.5..=2.5).contains(&dy)
+                })
                 .collect();
             prefer_pickup_height(&mut walkable_height,received.position);
             walkable_height.retain(|&log|can_approach_log(&received,log));
@@ -739,12 +747,12 @@ fn run_local(
         match decide(survey,index){
             Intent::GatherWood=>{
                 if let Some(log)=survey.nearby_log {
-                    let height_diff=(survey.position[1]-f64::from(log[1])).abs();
+                    let vertical_delta=f64::from(log[1])-survey.position[1];
                     let log_center=[f64::from(log[0])+0.5,f64::from(log[2])+0.5];
                     let dx=survey.position[0]-log_center[0];
                     let dz=survey.position[2]-log_center[1];
                     let distance=dx.hypot(dz);
-                    if height_diff>=1.5{
+                    if !(-1.5..=2.5).contains(&vertical_delta){
                         exploring=true;
                     } else if distance>2.3 {
                         if let Some(waypoint)=ground_step_to_log(survey,log) {
@@ -955,7 +963,10 @@ mod tests{
         };
         assert!(!can_approach_log(&survey,[5,65,0]));
         assert!(can_approach_log(&survey,[1,65,0]));
+        assert!(can_approach_log(&survey,[1,67,0]),
+            "normal eye-level reach should allow upper trunk harvesting");
         assert!(!can_approach_log(&survey,[1,68,0]));
+        assert!(!can_approach_log(&survey,[1,63,0]));
         assert_eq!(exploratory_downhill_step(&survey),
             Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
         survey.terrain=vec![[0,65,0],[2,64,0]];
