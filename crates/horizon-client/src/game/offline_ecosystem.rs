@@ -152,6 +152,7 @@ fn inventory_supply<F:FnMut(&str)->bool>(
 
 /// Ground-only, bounded 7x7 sampling; the caller checks real loaded
 /// blocks, physical floor, airspace, and fluid for every candidate.
+#[cfg(test)]
 fn ground_candidates<F:FnMut([i32;3])->bool>(
     center:[i32;3],mut is_standable:F
 )->Vec<[i32;2]>{
@@ -160,6 +161,26 @@ fn ground_candidates<F:FnMut([i32;3])->bool>(
         for dz in -3..=3{
             let p=[center[0]+dx,center[1],center[2]+dz];
             if is_standable(p){out.push([p[0],p[2]]);}
+        }
+    }
+    out
+}
+
+/// Probe nearby elevations without guessing walkability from a heightmap.
+/// The caller validates support, clearance, fluids and loaded chunks for
+/// every returned [x,y,z]. Vertical routes are not executed yet.
+fn terrain_candidates<F:FnMut([i32;3])->bool>(
+    center:[i32;3],mut is_standable:F
+)->Vec<[i32;3]>{
+    let mut out=Vec::with_capacity(147);
+    for dx in -3..=3 {
+        for dz in -3..=3 {
+            for dy in [-1,0,1] {
+                if let Some(y)=center[1].checked_add(dy){
+                    let p=[center[0]+dx,y,center[2]+dz];
+                    if is_standable(p){out.push(p);}
+                }
+            }
         }
     }
     out
@@ -244,7 +265,13 @@ impl ExperimentalBots {
             if !pos.iter().all(|x|x.is_finite()){continue;}
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
             let logs=log_candidates(center,|here|is_log(here)==Some(true));
-            let ground=ground_candidates(center,&mut is_standable);
+            let terrain=terrain_candidates(center,&mut is_standable);
+            let ground:Vec<[i32;2]>=terrain.iter()
+                .filter(|p|p[1]==center[1])
+                .map(|p|[p[0],p[2]]).collect();
+            let lower_count=terrain.iter().filter(|p|p[1]<center[1]).count();
+            let higher_count=terrain.iter().filter(|p|p[1]>center[1]).count();
+            let center_is_ground=ground.contains(&[center[0],center[2]]);
             let logs_count=logs.len();
             let ground_count=ground.len();
             let nearest=logs.first().copied();
@@ -278,15 +305,17 @@ impl ExperimentalBots {
                 // and supplied a valid server-authoritative loaded position.
                 // It is stronger evidence than the worker simply spawning.
                 log::info!(
-                    "Offline ecosystem {}: first authoritative survey at {:.2},{:.2},{:.2} logs={} ground_tiles={}",
-                    sink.name,pos[0],pos[1],pos[2],logs_count,ground_count
+                    "Offline ecosystem {}: first authoritative survey at {:.2},{:.2},{:.2} logs={} ground_tiles={} terrain_down={} terrain_up={} current_ground={}",
+                    sink.name,pos[0],pos[1],pos[2],logs_count,ground_count,
+                    lower_count,higher_count,center_is_ground
                 );
                 sink.first_observation_logged=true;
             }
             if sent.is_ok() && self.survey_ticks%160==0 {
                 log::info!(
-                    "Offline ecosystem {}: exploration survey position {:.2},{:.2},{:.2} logs={} ground_tiles={} wood_inventory={}",
-                    sink.name,pos[0],pos[1],pos[2],logs_count,ground_count,wood_inventory
+                    "Offline ecosystem {}: exploration survey position {:.2},{:.2},{:.2} logs={} ground_tiles={} terrain_down={} terrain_up={} current_ground={} wood_inventory={}",
+                    sink.name,pos[0],pos[1],pos[2],logs_count,ground_count,
+                    lower_count,higher_count,center_is_ground,wood_inventory
                 );
             }
         }
@@ -534,6 +563,19 @@ mod tests{
         assert_eq!(ground.len(),4);
         assert_eq!(ground[0],[10,20]);
         assert_eq!(ground[3],[10,23]);
+    }
+    #[test]fn terrain_probe_find_stands_at_nearby_different_heights(){
+        let all=terrain_candidates([10,64,20],|[x,y,z]|
+            (x==10&&z==20&&y==64) ||
+            (x==11&&z==20&&y==65) ||
+            (x==9&&z==20&&y==63)
+        );
+        assert!(all.contains(&[10,64,20]));
+        assert!(all.contains(&[11,65,20]));
+        assert!(all.contains(&[9,63,20]));
+        assert_eq!(all.len(),3);
+        let none=terrain_candidates([10,64,20],|_|false);
+        assert!(none.is_empty());
     }
     #[test]fn local_route_avoids_unobserved_wall(){
         let mut s=Survey{
