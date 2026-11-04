@@ -29,3 +29,7 @@ Keep experimental code isolated; use public-source-only tests. Keep core standal
 - The Android fork's `lan/conn.rs` enforces a `horizon:block_registry` challenge for Horizon-branded clients. The trusted same-process bot echoes that fingerprint; it is not safe for arbitrary remote clients because it doesn't prove independently loaded registry parity.
 - The `lan_bot.rs` integration test uses the real LAN hub and requires prepared game resources. It tests joining, chunk readiness, a movement packet and a block-use event. Its fixture directly places a block on receipt and therefore **does not verify survival item consumption, reach or block placement**.
 - Next: connect this client to the actual `Game::tick_lan` path, establish server-acknowledged survival actions, then schedule multiple individuals and profile CPU/memory cost.
+
+## Resource-free real networking test
+
+The Android fork has `SyncData::empty()` available during its own library unit tests. The new `offline_ecosystem_local_player_joins_real_lan_without_resources` test instantiates Horizon's **actual** `Lan::start_with`, calls `connect_local`, completes a full local login and configuration with the ecosystem client, then verifies the real LAN raises a joined event. It does not instantiate the Minecraft world. The separate `lan_bot.rs` hub/world test still needs prepared game assets.

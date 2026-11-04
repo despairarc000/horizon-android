@@ -1018,4 +1018,31 @@ mod tests {
         drop((held, newcomer));
         assert_eq!(shared.connections.load(Ordering::Acquire), 0);
     }
+    /// Uses Horizon's real local authentication, configuration and connection
+    /// thread; unlike the big LAN world fixture it needs no Mojang assets.
+    #[test]
+    fn offline_ecosystem_local_player_joins_real_lan_without_resources() {
+        use horizon_offline_ecosystem_client::LocalPlayer;
+        let config=NetConfig{
+            listen:false,
+            announce:false,
+            ..NetConfig::lan(0,"Ecosystem local test".into(),4)
+        };
+        let lan=Lan::start_with(Arc::new(data::SyncData::empty()),config)
+            .expect("start actual Horizon LAN");
+        let pipe=lan.connect_local().expect("in-memory server connection");
+        let bot=LocalPlayer::join(pipe,"EcoNative0",2)
+            .expect("native local protocol join");
+        assert_eq!(bot.name(),"EcoNative0");
+        let deadline=Instant::now()+Duration::from_secs(5);
+        loop{
+            let events=lan.poll();
+            if events.iter().any(|event|matches!(event,NetEvent::Joined(_))){
+                break;
+            }
+            assert!(Instant::now()<deadline,"real LAN didn't report the local bot join");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
 }
