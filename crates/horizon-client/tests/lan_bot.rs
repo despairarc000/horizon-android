@@ -1456,7 +1456,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
 /// The resource-backed world runner remains the real collision test.
 #[test]
 fn offline_ecosystem_survival_jump_lands_on_server_known_stone_step(){
-    use horizon_offline_ecosystem_core::terrain_path::StepUpController;
+    use ecosystem_core::terrain_path::StepUpController;
     let Some(resources)=resources() else{return;};
     let mut server=server(&resources);
     server.hub.config.default_game_mode=0;
