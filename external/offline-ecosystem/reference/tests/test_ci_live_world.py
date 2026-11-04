@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from ci_live_world import (
     check_events, terrain_report, steering_report, server_mining_report,
-    server_destroy_report, item_pickup_report, downhill_report, confirm_observed_exploration,
+    server_destroy_report, item_pickup_report, downhill_report, uphill_report, confirm_observed_exploration,
 )
 
 def login(name, eid):
@@ -127,6 +127,22 @@ class DownhillMovementTests(unittest.TestCase):
         self.assertEqual(
             downhill_report(logs[:1])["server_confirmed_landings"],0
         )
+
+class UphillMotionTests(unittest.TestCase):
+    def test_only_server_acknowledged_jump_is_success(self):
+        lines=[
+            "Offline ecosystem EcoAI0: approaching real trunk uphill toward verified surface [1, 65, 0]",
+            "Offline ecosystem EcoAI1: attempting normal uphill jump to verified surface [2, 65, 0]",
+            "Offline ecosystem EcoAI0: server-authoritative uphill landing at [1, 65, 0]",
+            "Offline ecosystem EcoAI1: uphill motion unconfirmed; backing off from [2, 65, 0]",
+            "Offline ecosystem EcoAI1: uphill packet rejected: jump destination chunk unavailable",
+        ]
+        counts=uphill_report(lines)
+        self.assertEqual(counts["uphill_attempts"],2)
+        self.assertEqual(counts["server_confirmed_uphill_landings"],1)
+        self.assertEqual(counts["unconfirmed_uphill_timeouts"],1)
+        self.assertEqual(counts["rejected_uphill_packets"],1)
+        self.assertEqual(uphill_report(lines[:2])["server_confirmed_uphill_landings"],0)
 
 class TerrainProbeTests(unittest.TestCase):
     def test_reports_validated_elevations_and_actual_displacement(self):
