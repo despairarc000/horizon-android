@@ -180,7 +180,7 @@ mod tests {
         for n in 1..=10 {
             m.attempted_step(first);
             assert_eq!(
-                m.observe(n * 8 + 1, [f64::from(n) * 0.15,64.,0.], &[first]),
+                m.observe(n * 8 + 1, [(n as f64) * 0.15,64.,0.], &[first]),
                 Some(first),
             );
         }
