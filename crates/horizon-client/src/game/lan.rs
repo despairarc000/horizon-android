@@ -2363,6 +2363,16 @@ impl Game<'_> {
                     Some(name.ends_with("_log") || name.ends_with("_stem"))
                 },|item|{
                     self.res.items().get(item).is_some_and(|info|info.food.is_some())
+                },|position|{
+                    let [x,y,z]=position;
+                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return false;}
+                    let facts=self.res.facts();
+                    let below=facts.get(self.world.block(x,y-1,z));
+                    let at=facts.get(self.world.block(x,y,z));
+                    let above=facts.get(self.world.block(x,y+1,z));
+                    below.full_collision && below.fluid_level==0
+                        && !at.full_collision && at.fluid_level==0
+                        && !above.full_collision && above.fluid_level==0
                 });
             }
         }

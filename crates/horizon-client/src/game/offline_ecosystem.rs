@@ -17,6 +17,7 @@ use ecosystem_core::{
     BotView, Intent, LocalObservation, Needs, Personality, choose_intent,
     navigation::TargetMemory,
     harvest::{HarvestEvidence,HarvestStatus},
+    local_path::{first_ground_step,neighboring_resource_goals},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -36,6 +37,9 @@ struct Survey {
     /// The exact requested mining target, only if its loaded block could be
     /// inspected by the authoritative server in this survey.
     watched_log: Option<([i32;3],bool)>,
+    /// Loaded, approximately level ground tiles with full support and
+    /// two-block clearance. Never an omniscient traversability map.
+    ground: Vec<[i32;2]>,
     /// At most 32 nearby real server blocks; unrecognized/absent blocks
     /// are never treated as resources. Not yet an occlusion-aware view.
     logs: Vec<[i32; 3]>,
@@ -145,6 +149,40 @@ fn inventory_supply<F:FnMut(&str)->bool>(
      hotbar_food)
 }
 
+/// Ground-only, bounded 7x7 sampling; the caller checks real loaded
+/// blocks, physical floor, airspace, and fluid for every candidate.
+fn ground_candidates<F:FnMut([i32;3])->bool>(
+    center:[i32;3],mut is_standable:F
+)->Vec<[i32;2]>{
+    let mut out=Vec::with_capacity(49);
+    for dx in -3..=3{
+        for dz in -3..=3{
+            let p=[center[0]+dx,center[1],center[2]+dz];
+            if is_standable(p){out.push([p[0],p[2]]);}
+        }
+    }
+    out
+}
+
+/// The next ground tile on a real obstacle-aware, local route to a log.
+/// No jump/swim/drop ability is inferred when the local grid has no route.
+fn ground_step_to_log(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
+    let start=[survey.position[0].floor() as i32,survey.position[2].floor() as i32];
+    let goals=neighboring_resource_goals(log,&survey.ground);
+    let step=first_ground_step(start,&goals,&survey.ground)?;
+    Some([f64::from(step[0])+0.5,f64::from(step[1])+0.5])
+}
+fn ground_step_to_pickup(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
+    let start=[survey.position[0].floor() as i32,survey.position[2].floor() as i32];
+    let goals:Vec<_>=survey.ground.iter().copied().filter(|[x,z]|{
+        let dx=i64::from(*x)-i64::from(log[0]);
+        let dz=i64::from(*z)-i64::from(log[2]);
+        dx*dx+dz*dz<=1
+    }).collect();
+    let step=first_ground_step(start,&goals,&survey.ground)?;
+    Some([f64::from(step[0])+0.5,f64::from(step[1])+0.5])
+}
+
 impl ExperimentalBots {
     pub(super) fn start(hub:&Hub)->Option<Self>{
         let count=configured_count(
@@ -191,8 +229,8 @@ impl ExperimentalBots {
     /// probes nearby logs, but is NOT visual line-of-sight perception yet;
     /// occluded blocks in that radius may be discovered. Never scan an
     /// unloaded chunk, never synthesize a block or resource.
-    pub(super) fn survey<F,G>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G)
-    where F: FnMut([i32;3])->Option<bool>, G: FnMut(&str)->bool
+    pub(super) fn survey<F,G,H>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G,mut is_standable:H)
+    where F: FnMut([i32;3])->Option<bool>, G: FnMut(&str)->bool,H:FnMut([i32;3])->bool
     {
         self.survey_ticks+=1;
         if self.survey_ticks%8!=0{return;}
@@ -205,6 +243,7 @@ impl ExperimentalBots {
             if !pos.iter().all(|x|x.is_finite()){continue;}
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
             let logs=log_candidates(center,|here|is_log(here)==Some(true));
+            let ground=ground_candidates(center,&mut is_standable);
             let nearest=logs.first().copied();
             let watched_log=sink.watched_target.try_lock().ok()
                 .and_then(|guard|*guard)
@@ -228,6 +267,7 @@ impl ExperimentalBots {
                 hotbar_food_slot,
                 nearby_log:nearest,
                 watched_log,
+                ground,
                 logs,
             });
             if sent.is_ok() && !sink.first_observation_logged {
@@ -342,7 +382,9 @@ fn run_local(
             let z=f64::from(probe.target[2])+0.5;
             let delta=(survey.position[0]-x).hypot(survey.position[2]-z);
             if delta>0.55 && (survey.position[1]-f64::from(probe.target[1])).abs()<1.5{
-                let _=player.steer_xz([x,z]);
+                if let Some(waypoint)=ground_step_to_pickup(survey,probe.target){
+                    let _=player.steer_xz(waypoint);
+                }
             }
             player.client_tick_end()?;
             continue;
@@ -359,12 +401,14 @@ fn run_local(
                     if height_diff>=1.5{
                         exploring=true;
                     } else if distance>2.3 {
-                        let target=[
-                            log_center[0]+dx/distance*2.0,
-                            log_center[1]+dz/distance*2.0,
-                        ];
-                        if matches!(player.steer_xz(target),Ok(false)){
-                            target_memory.attempted_step(log);
+                        if let Some(waypoint)=ground_step_to_log(survey,log) {
+                            if matches!(player.steer_xz(waypoint),Ok(false)){
+                                target_memory.attempted_step(log);
+                            }
+                        } else {
+                            // Unknown or unsafe cells are never traversed.
+                            // This is still only level-ground navigation.
+                            exploring=true;
                         }
                     } else if !survey.logs.contains(&log) {
                         // Last-known location only: investigate, never mine
@@ -431,7 +475,7 @@ mod tests{
             tick:0,
             position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
-            nearby_log:None,watched_log:None, logs:vec![],
+            nearby_log:None,watched_log:None,ground:vec![[0,0]], logs:vec![],
         };
         assert_eq!(decide(&survey,0),Intent::Explore);
         survey.nearby_log=Some([1,64,0]);
@@ -471,4 +515,22 @@ mod tests{
         );
         assert_eq!((food,wood,slot),(0,7,None));
     }
+    #[test]fn server_ground_survey_is_local_and_not_omniscient(){
+        let ground=ground_candidates([10,64,20],|p|p[0]==10 && p[2]>=20);
+        assert_eq!(ground.len(),4);
+        assert_eq!(ground[0],[10,20]);
+        assert_eq!(ground[3],[10,23]);
+    }
+    #[test]fn local_route_avoids_unobserved_wall(){
+        let mut s=Survey{
+            tick:0,position:[0.5,64.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:Some([3,64,0]),watched_log:None,logs:vec![[3,64,0]],
+            ground:vec![[0,0],[0,1],[1,1],[2,1],[3,1]],
+        };
+        assert_eq!(ground_step_to_log(&s,[3,64,0]),Some([0.5,1.5]));
+        s.ground=vec![[0,0],[3,1]];
+        assert_eq!(ground_step_to_log(&s,[3,64,0]),None);
+    }
+
 }
