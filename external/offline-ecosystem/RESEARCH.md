@@ -39,3 +39,9 @@ The Android fork has `SyncData::empty()` available during its own library unit t
 An opt-in `ExperimentalBots` coordinator now scans a limited 7x4x7 **loaded-block neighborhood** of each real connected guest every eight server ticks. It sends only server position, actual health, actual hunger, and a nearby log coordinate over a capacity-one nonblocking channel to its corresponding headless bot. The bot uses `ecosystem_core::choose_intent` and tries short level-ground steering toward wood, otherwise exploring a small local waypoint path.
 
 This is an intentionally incomplete prototype: it does not yet do raycast visibility, full voxel navigation, reach-certified mining, inventory observation, crafting, combat, shelter building, social contact or population realization. Core `Needs::energy` is set to 100 rather than inventing a Minecraft stamina mechanic. Background workers have no access to full world state. Never interpret a steering attempt as confirmed movement; the next authoritative survey reconciles position.
+
+## Real, server-validated mining attempt (prototype)
+
+Headless bots now use a capacity-one server survey with a capped list of 32 nearby log coordinates (not LOS-aware). When a log is near and approximately level, the bot emits `PlayerAction START`, waits at least 85 non-paused server survey ticks, and emits `STOP`. Horizon's own server checks reach, protection, tool mining progress, inventory and block drops. If a surveyed block disappears the bot stops the attempt; **disappearance is not credited as a successful harvest or inventory gain**. Retries are capped to two for the same block, with a cooldown.
+
+No crafting, item pickup confirmation, vertical navigation or obstacle-aware pathfinding is implemented. The test still requires a full resource-backed world execution before we can claim a bot mined a log.
