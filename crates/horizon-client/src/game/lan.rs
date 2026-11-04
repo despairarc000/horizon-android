@@ -2373,6 +2373,26 @@ impl Game<'_> {
                     below.full_collision && below.fluid_level==0
                         && !at.full_collision && at.fluid_level==0
                         && !above.full_collision && above.fluid_level==0
+                },|position|{
+                    // Only actual item entities local to this player, with
+                    // physically available wood in their ItemStack.
+                    let mut nearby:Vec<[f64;3]>=self.dropped.iter()
+                        .filter(|d| {
+                            let id=d.stack.item.as_ref();
+                            id.ends_with("_log") || id.ends_with("_stem")
+                        })
+                        .map(|d|[d.position.x,d.position.y,d.position.z])
+                        .filter(|p|p.iter().all(|v|v.is_finite())
+                            && (p[0]-position[0]).abs()<=6.0
+                            && (p[1]-position[1]).abs()<=4.0
+                            && (p[2]-position[2]).abs()<=6.0)
+                        .collect();
+                    let score=|p:&[f64;3]|(p[0]-position[0]).powi(2)
+                        +(p[1]-position[1]).powi(2)
+                        +(p[2]-position[2]).powi(2);
+                    nearby.sort_by(|a,b|score(a).total_cmp(&score(b)));
+                    nearby.truncate(16);
+                    nearby
                 });
             }
         }
