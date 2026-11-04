@@ -1723,6 +1723,8 @@ dependencies = [
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
+ "horizon-offline-ecosystem-client",
+ "horizon-offline-ecosystem-core",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",
@@ -1932,6 +1934,21 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "horizon-offline-ecosystem-client"
+version = "0.1.0"
+dependencies = [
+ "horizon-protocol",
+]
+
+[[package]]
+name = "horizon-offline-ecosystem-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
