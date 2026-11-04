@@ -2393,6 +2393,19 @@ impl Game<'_> {
                     nearby.sort_by(|a,b|score(a).total_cmp(&score(b)));
                     nearby.truncate(16);
                     nearby
+                },|position|{
+                    // Survey only observed logs whose own removal would
+                    // uncover a supported, two-block-high standing cell.
+                    // The current world is never modified by this probe.
+                    let [x,y,z]=position;
+                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return false;}
+                    let facts=self.res.facts();
+                    let here=facts.get(self.world.block(x,y,z));
+                    let below=facts.get(self.world.block(x,y-1,z));
+                    let above=facts.get(self.world.block(x,y+1,z));
+                    (here.name.ends_with("_log")||here.name.ends_with("_stem"))
+                        && below.full_collision && below.fluid_level==0
+                        && !above.full_collision && above.fluid_level==0
                 });
             }
         }
