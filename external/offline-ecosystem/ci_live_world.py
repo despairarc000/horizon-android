@@ -277,6 +277,34 @@ def downhill_report(lines: list[str]) -> dict[str,int]:
     return result
 
 
+UPHILL_ATTEMPT = re.compile(
+    r"Offline ecosystem (EcoAI[01]): "
+    r"(?:attempting normal uphill jump to|approaching real trunk uphill toward) "
+    r"verified surface"
+)
+UPHILL_LANDING = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server-authoritative uphill landing"
+)
+UPHILL_TIMEOUT = re.compile(
+    r"Offline ecosystem (EcoAI[01]): uphill motion unconfirmed"
+)
+UPHILL_REJECTED = re.compile(
+    r"Offline ecosystem (EcoAI[01]): uphill packet rejected"
+)
+
+
+def uphill_report(lines: list[str]) -> dict[str, int]:
+    """Transport attempts never substitute for server-confirmed landing."""
+    return {
+        "uphill_attempts": sum(bool(UPHILL_ATTEMPT.search(x)) for x in lines),
+        "server_confirmed_uphill_landings": sum(
+            bool(UPHILL_LANDING.search(x)) for x in lines
+        ),
+        "unconfirmed_uphill_timeouts": sum(bool(UPHILL_TIMEOUT.search(x)) for x in lines),
+        "rejected_uphill_packets": sum(bool(UPHILL_REJECTED.search(x)) for x in lines),
+    }
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -368,6 +396,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Server-side survival mining decisions: {server_mining_report(lines)}")
     print(f"Actual server destruction outcomes: {server_destroy_report(lines)}")
     print(f"Survival downhill movement evidence: {downhill_report(lines)}")
+    print(f"Survival uphill movement evidence: {uphill_report(lines)}")
     print(f"Physical drops and pickup geometry (not confirmed inventory): {item_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
