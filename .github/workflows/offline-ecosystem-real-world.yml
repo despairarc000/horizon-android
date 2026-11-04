@@ -53,8 +53,8 @@ jobs:
           PY
       - name: Prepare private Minecraft resources from official pinned downloads
         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
-      - name: Run real Horizon LAN world integration with an offline bot
-        run: cargo test -p horizon-client --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
+      - name: Assert server-authoritative movement and real block action
+        run: cargo test -p horizon-client --locked --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
       - name: Check resource boundary
         if: always()
         run: |
