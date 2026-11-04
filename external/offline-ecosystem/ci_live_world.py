@@ -218,6 +218,10 @@ ITEM_PICKUP_GEOMETRY = re.compile(
     r"local_drops=(\d+) horizontal_near=(\d+) "
     r"actually_touchable=(\d+) sampled_y=(.*)"
 )
+SERVER_ACCEPTED_WOOD = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server accepted wood pickup "
+    r"item=(\S+) count=(\d+) drop_entity=(\d+)"
+)
 
 
 def item_pickup_report(lines: list[str]) -> dict[str, int]:
@@ -228,8 +232,15 @@ def item_pickup_report(lines: list[str]) -> dict[str, int]:
         "max_local_drop_entities": 0,
         "max_horizontally_near": 0,
         "max_touchable": 0,
+        "server_accepted_wood_events": 0,
+        "server_accepted_wood_items": 0,
     }
     for line in lines:
+        if match := SERVER_ACCEPTED_WOOD.search(line):
+            # This log is emitted only after Horizon's real guest.give()
+            # succeeds, not from an item nearby or a requested break.
+            result["server_accepted_wood_events"] += 1
+            result["server_accepted_wood_items"] += int(match.group(3))
         if match := SERVER_ITEM_DROPS.search(line):
             result["new_server_drop_entities"] += int(match.group(2))
         if match := ITEM_PICKUP_GEOMETRY.search(line):
@@ -493,7 +504,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     loop_ok=all(v["longest_two_surface_alternation"]<8 for v in cycles.values())
     if not loop_ok:
         print("ERROR: repeated confirmed landings show an eight-step two-surface exploration cycle")
-    print(f"Physical drops and pickup geometry (not confirmed inventory): {item_pickup_report(lines)}")
+    print(f"Physical drops, sampled geometry and server inventory transfers: {item_pickup_report(lines)}")
     print(f"Inaccessible dropped item recovery (no pickup): {blocked_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     access=harvest_access_report(lines)
