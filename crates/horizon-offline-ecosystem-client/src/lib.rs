@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use horizon_protocol::{
+    item::Stack,
     PROTOCOL_VERSION,
     buf::{Reader,Writer},
     connection::{Connection,Pipe},
@@ -28,12 +29,26 @@ pub struct State {
     pub last_block_update: Option<([i32;3],i32)>,
 }
 
+/// A server-authoritative snapshot of the 46-slot 2x2 inventory menu.
+///
+/// The bot never creates an item locally. A snapshot can only be populated by
+/// an actual Horizon ContainerSetContent packet and updated by its slot
+/// corrections. The server's own 2x2 crafting engine remains authoritative.
+#[derive(Clone,Debug,PartialEq)]
+pub struct InventoryMenu {
+    pub revision:i32,
+    pub slots:Vec<Option<Stack>>,
+    pub carried:Option<Stack>,
+}
+
 pub struct LocalPlayer {
     conn: Connection,
     name: String,
     pub state: State,
     chunks: HashSet<(i32,i32)>,
     announced_loaded: bool,
+    inventory_menu:Option<InventoryMenu>,
+    menu_click_pending:bool,
 }
 
 impl LocalPlayer {
@@ -126,9 +141,14 @@ impl LocalPlayer {
             conn.send(&answer.encode()).map_err(err)?;
         }
         Ok(Self{conn,name:name.into(),state:State::default(),
-                chunks:HashSet::new(),announced_loaded:false})
+                chunks:HashSet::new(),announced_loaded:false,
+                inventory_menu:None,menu_click_pending:false})
     }
     pub fn name(&self)->&str{&self.name}
+    pub fn inventory_menu(&self)->Option<&InventoryMenu>{
+        self.inventory_menu.as_ref()
+    }
+    pub fn inventory_click_pending(&self)->bool{self.menu_click_pending}
     /// Poll the local connection for one packet without starving the bot
     /// decision loop when the server sends no packets. The read timeout is
     /// reset so the original blocking pump retains its meaning.
@@ -210,6 +230,48 @@ impl LocalPlayer {
             cb::SET_HEALTH=>{
                 if let play::Clientbound::SetHealth(p)=play::Clientbound::decode(id,body).map_err(err)?{
                     self.state.health=Some(p.health);self.state.hunger=Some(p.food);
+                }
+            },
+            cb::CONTAINER_SET_CONTENT=>{
+                // The 2x2 inventory menu is window zero and exactly 46
+                // slots. Other windows and incomplete snapshots cannot
+                // authorize a crafting click.
+                if let Ok(play::Clientbound::ContainerSetContent(p))=
+                    play::Clientbound::decode(id,body)
+                {
+                    if p.container==0 {
+                        self.inventory_menu=if p.items.len()==46 {
+                            Some(InventoryMenu{
+                                revision:p.state,slots:p.items,carried:p.carried
+                            })
+                        } else {None};
+                        self.menu_click_pending=false;
+                    }
+                } else {
+                    // Unknown component encoding? Keep playing, but disable
+                    // all inventory actions until a valid full snapshot.
+                    self.inventory_menu=None;
+                    self.menu_click_pending=false;
+                }
+            },
+            cb::CONTAINER_SET_SLOT=>{
+                if let Ok(play::Clientbound::ContainerSetSlot(p))=
+                    play::Clientbound::decode(id,body)
+                {
+                    if p.container==0{
+                        if let Some(menu)=self.inventory_menu.as_mut(){
+                            if let Ok(i)=usize::try_from(p.slot) {
+                                if i<menu.slots.len(){
+                                    menu.slots[i]=p.item;
+                                    menu.revision=p.state;
+                                    self.menu_click_pending=false;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    self.inventory_menu=None;
+                    self.menu_click_pending=false;
                 }
             },
             cb::DISCONNECT|cb::START_CONFIGURATION=>
@@ -324,6 +386,31 @@ impl LocalPlayer {
         let step=dist.min(0.2);
         self.walk_delta(dx/dist*step,dz/dist*step)?;
         Ok(false)
+    }
+    /// Submit one ordinary, 2x2 inventory-menu click. Never predict an
+    /// inventory mutation or call it a craft: only a subsequent full server
+    /// menu snapshot or slot update can acknowledge the action. Disallow
+    /// creative clone, throw and unsupported drag inputs.
+    pub fn inventory_click(&mut self,slot:i16,button:i8,input:i32)
+        ->Result<(),String>
+    {
+        if !self.state.ready{return Err("player not ready".into());}
+        let menu=self.inventory_menu.as_ref()
+            .ok_or("server inventory menu has not been observed")?;
+        if self.menu_click_pending {
+            return Err("previous inventory click not yet synchronized".into());
+        }
+        if !(0..=44).contains(&slot)
+            || !matches!((input,button),(0,0)|(0,1)|(1,0)|(1,1))
+        {
+            return Err("unsupported inventory click mode or slot".into());
+        }
+        let state=menu.revision;
+        self.send(play::Serverbound::ContainerClick(play::ContainerClick{
+            container:0,state,slot,button,input,changed:Vec::new(),carried:None,
+        }))?;
+        self.menu_click_pending=true;
+        Ok(())
     }
     /// Start or stop mining using normal Minecraft player packets. Vanilla
     /// tool speed and mining time must be respected by a future task planner.
