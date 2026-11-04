@@ -280,6 +280,34 @@ impl LocalPlayer {
         self.state.position=Some(next);
         Ok(next)
     }
+    /// Send a single bounded normal survival jump/fall movement packet.
+    /// Never teleport, fly, synthesize collision clearance or set inventory.
+    /// The first upward packet has on_ground=false so Horizon performs its
+    /// actual jump-from-ground handling and validates the resulting motion.
+    pub fn jump_delta(
+        &mut self,dx:f64,dy:f64,dz:f64,on_ground:bool
+    )->Result<[f64;3],String>{
+        let at=self.state.position.ok_or("missing spawn")?;
+        if !self.state.ready{return Err("current chunk not ready".into());}
+        if ![dx,dy,dz].iter().all(|v|v.is_finite())
+            || dx*dx+dz*dz>0.057601
+            || !(-0.300001..=0.420001).contains(&dy)
+            || (dy>0.0 && on_ground)
+        {
+            return Err("jump packet exceeds bounded survival movement".into());
+        }
+        let next=[at[0]+dx,at[1]+dy,at[2]+dz];
+        if !next.iter().all(|v|v.is_finite()) || !self.has_chunk(next){
+            return Err("jump destination chunk unavailable".into());
+        }
+        self.send(play::Serverbound::MovePlayerPos(play::MovePlayerPos{
+            x:next[0],y:next[1],z:next[2],flags:u8::from(on_ground),
+        }))?;
+        // Local prediction is not an observed jump. Authoritative surveys
+        // overwrite this value and can reject the entire attempted arc.
+        self.state.position=Some(next);
+        Ok(next)
+    }
     /// One conservative horizontal steering action toward a known target.
     /// This is a low-level action, not pathfinding. It cannot cross obstacles,
     /// climb, jump or validate a survival task, and may be corrected by server.
