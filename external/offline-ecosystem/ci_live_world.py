@@ -100,8 +100,8 @@ def terrain_report(lines: list[str]) -> dict[str,dict[str,int|float|bool]]:
 
 
 STEERING_SAMPLE = re.compile(
-    r"Offline ecosystem (EcoAI[01]): steering packets_sent=(\\d+) "
-    r"waypoints_reached=(\\d+) rejected=(\\d+) last_error=(.*)"
+    r"Offline ecosystem (EcoAI[01]): steering packets_sent=(\d+) "
+    r"waypoints_reached=(\d+) rejected=(\d+) last_error=(.*)"
 )
 
 
