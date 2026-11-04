@@ -99,6 +99,24 @@ def terrain_report(lines: list[str]) -> dict[str,dict[str,int|float|bool]]:
     return result
 
 
+def confirm_observed_exploration(
+    lines: list[str], min_bots: int = 1, excursion_blocks: float = 1.0
+) -> tuple[bool, str]:
+    """Require multiple server position samples, not attempted packets."""
+    if min_bots < 0 or min_bots > len(BOT_NAMES) or excursion_blocks < 0:
+        raise ValueError("invalid observed exploration threshold")
+    report = terrain_report(lines)
+    movers = [
+        name for name in BOT_NAMES
+        if report[name].get("samples", 0) >= 2
+        and report[name].get("max_sampled_excursion", 0.0) >= excursion_blocks
+    ]
+    return len(movers) >= min_bots, (
+        f"{len(movers)}/{len(BOT_NAMES)} bots moved at least "
+        f"{excursion_blocks:g} blocks in published server samples: {movers}"
+    )
+
+
 STEERING_SAMPLE = re.compile(
     r"Offline ecosystem (EcoAI[01]): steering packets_sent=(\d+) "
     r"waypoints_reached=(\d+) rejected=(\d+) last_error=(.*)"
@@ -172,7 +190,8 @@ def harvest_report(lines: list[str]) -> dict[str,int]:
 
 
 def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
-        timeout_seconds: float, post_ready_seconds: float = 0) -> int:
+        timeout_seconds: float, post_ready_seconds: float = 0,
+        min_bots: int = 0, excursion_blocks: float = 1.0) -> int:
     scratch.mkdir(parents=True, exist_ok=True)
     console = scratch / "console.log"
     command = [
@@ -253,7 +272,11 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
-    return 0 if reached and held_for_requested_period else 1
+    movement_ok, movement_note = confirm_observed_exploration(
+        lines, min_bots, excursion_blocks
+    )
+    print(f"Authoritative movement acceptance: {movement_note}")
+    return 0 if reached and held_for_requested_period and movement_ok else 1
 
 
 def main() -> int:
@@ -263,6 +286,8 @@ def main() -> int:
     parser.add_argument("--scratch", type=pathlib.Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=140)
     parser.add_argument("--post-ready-seconds", type=float, default=0)
+    parser.add_argument("--min-moving-bots", type=int, default=0)
+    parser.add_argument("--min-excursion-blocks", type=float, default=1.0)
     args = parser.parse_args()
     if not args.binary.is_file() or not args.resources.is_dir():
         parser.error("compiled game binary and prepared resources are required")
@@ -272,8 +297,13 @@ def main() -> int:
         parser.error("post-ready period must be between 0 and 120 seconds")
     if args.post_ready_seconds >= args.timeout_seconds:
         parser.error("post-ready period must be shorter than deadline")
+    if not (0 <= args.min_moving_bots <= len(BOT_NAMES)):
+        parser.error("min-moving-bots must be between 0 and two")
+    if not (0 < args.min_excursion_blocks <= 30):
+        parser.error("min-excursion-blocks must be between 0 and 30")
     return run(args.binary, args.resources, args.scratch,
-               args.timeout_seconds, args.post_ready_seconds)
+               args.timeout_seconds, args.post_ready_seconds,
+               args.min_moving_bots, args.min_excursion_blocks)
 
 
 if __name__ == "__main__":
