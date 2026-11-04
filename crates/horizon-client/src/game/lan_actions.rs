@@ -1568,13 +1568,18 @@ impl Game<'_> {
                     if host.experimental_bots.is_some()
                         && host.hub.guests[gi].name.starts_with("EcoAI")
                     {
-                        let guest = &host.hub.guests[gi];
+                        // may_reach_block queries lazily cached attributes
+                        // and needs &mut Guest. Read the immutable predicates
+                        // before borrowing that guest mutably.
+                        let spawn_protected = self.under_spawn_protection(host, gi, a.pos);
+                        let inside_border = self.border.contains(
+                            f64::from(a.pos[0]), f64::from(a.pos[2])
+                        );
+                        let reach = host.hub.guests[gi].may_reach_block(a.pos);
                         log::info!(
                             "Offline ecosystem {}: server mining START target={:?} in_reach={} spawn_protected={} inside_border={} spectator={}",
-                            guest.name, a.pos, guest.may_reach_block(a.pos),
-                            self.under_spawn_protection(host, gi, a.pos),
-                            self.border.contains(f64::from(a.pos[0]), f64::from(a.pos[2])),
-                            spectator
+                            host.hub.guests[gi].name, a.pos, reach,
+                            spawn_protected, inside_border, spectator
                         );
                     }
                     host.hub.ack(conn, a.sequence);
