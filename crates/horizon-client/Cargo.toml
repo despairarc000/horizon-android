@@ -8,6 +8,8 @@ rust-version = "1.90"
 description = "Horizon native development client"
 
 [dependencies]
+horizon-offline-ecosystem-client = { path = "../horizon-offline-ecosystem-client" }
+horizon-offline-ecosystem-core = { path = "../horizon-offline-ecosystem-core" }
 horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }

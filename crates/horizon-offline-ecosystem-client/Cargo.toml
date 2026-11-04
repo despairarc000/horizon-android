@@ -1,0 +1,9 @@
+[package]
+name = "horizon-offline-ecosystem-client"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Headless in-memory player client for offline simulation"
+
+[dependencies]
+horizon-protocol = { path = "../horizon-protocol" }

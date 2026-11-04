@@ -151,6 +151,7 @@ mod jigsaw_edit;
 mod jukebox;
 mod key_focus;
 mod lan;
+mod offline_ecosystem;
 mod lan_actions;
 mod lan_attributes;
 mod lan_camera;

@@ -1563,6 +1563,25 @@ impl Game<'_> {
         match packet {
             S::PlayerAction(a) => match a.action {
                 0 => {
+                    // Opt-in, local-only diagnosis of real player mining.
+                    // Do not interpret a submitted packet as an accepted dig.
+                    if host.experimental_bots.is_some()
+                        && host.hub.guests[gi].name.starts_with("EcoAI")
+                    {
+                        // may_reach_block queries lazily cached attributes
+                        // and needs &mut Guest. Read the immutable predicates
+                        // before borrowing that guest mutably.
+                        let spawn_protected = self.under_spawn_protection(host, gi, a.pos);
+                        let inside_border = self.border.contains(
+                            f64::from(a.pos[0]), f64::from(a.pos[2])
+                        );
+                        let reach = host.hub.guests[gi].may_reach_block(a.pos);
+                        log::info!(
+                            "Offline ecosystem {}: server mining START target={:?} in_reach={} spawn_protected={} inside_border={} spectator={}",
+                            host.hub.guests[gi].name, a.pos, reach,
+                            spawn_protected, inside_border, spectator
+                        );
+                    }
                     host.hub.ack(conn, a.sequence);
                     if spectator {
                         return;
@@ -4071,6 +4090,18 @@ impl Game<'_> {
             play.dig_ended();
             stop_dig(play, pos, air, ticks, per_tick)
         };
+        if host.experimental_bots.is_some()
+            && let Some(guest) = host.hub.guests.iter().find(|g| g.conn == conn)
+            && guest.name.starts_with("EcoAI")
+        {
+            log::info!(
+                "Offline ecosystem {}: server mining STOP target={:?} elapsed_ticks={:?} progress_per_tick={:.5} decision={:?} is_air={}",
+                guest.name, pos, host.play.get(&conn)
+                    .and_then(|p| p.dig_start_for(pos))
+                    .map(|start| ticks.saturating_sub(start)),
+                per_tick, decision, air
+            );
+        }
         match decision {
             StopDig::Other => {}
             // Already broken (the guest's own tick dug it out): only the crack goes.
@@ -4115,9 +4146,54 @@ impl Game<'_> {
     /// ServerPlayerGameMode.destroyBlock for a guest, its crack cleared for the others
     /// (`destroyBlockProgress(id, pos, -1)`).
     fn guest_destroy(&mut self, host: &mut LanHost, conn: u32, pos: [i32; 3]) {
-        self.as_guest(host, conn, |g| {
-            let _ = g.break_block(pos);
-        });
+        // Only the opt-in local ecosystem experiment gets block outcome
+        // telemetry. The usual server action and game rules remain intact.
+        let diagnostic_name = if host.experimental_bots.is_some() {
+            host.hub.guest(conn).and_then(|guest| {
+                guest.name.starts_with("EcoAI").then(|| guest.name.clone())
+            })
+        } else {
+            None
+        };
+        let before = diagnostic_name.as_ref().map(|_| self.world.block(
+            pos[0], pos[1], pos[2]
+        ));
+        // Entity IDs are monotonic. This records dropped item entities
+        // created by this single synchronous break without changing loot.
+        let prior_entity_id=diagnostic_name.as_ref().map(|_|self.next_entity);
+        // Do not discard a failure from the actual survival destruction
+        // path. In particular, STOP=Break alone proves no world mutation.
+        let outcome = self.as_guest(host, conn, |g| g.break_block(pos));
+        if let Some(name) = diagnostic_name {
+            let after = self.world.block(pos[0], pos[1], pos[2]);
+            let before_state = before.expect("diagnostic state captured");
+            let post_block = self.res.facts().get(after);
+            let result = match &outcome {
+                Some(Ok(())) => "ok".to_owned(),
+                Some(Err(error)) => format!("error:{error}"),
+                None => "actor-unavailable".to_owned(),
+            };
+            log::info!(
+                "Offline ecosystem {name}: server destroy result={result} target={pos:?} world_changed={} after_block={} after_air={}",
+                before_state != after, post_block.name,
+                self.res.facts().is_air(after)
+            );
+            if let Some(before_id)=prior_entity_id{
+                let new_drops=self.dropped.iter().filter(|d|d.id>before_id).count();
+                let items:Vec<_>=self.dropped.iter()
+                    .filter(|d|d.id>before_id)
+                    .take(8)
+                    .map(|d|format!(
+                        "{}@{:.2},{:.2},{:.2}",
+                        d.stack.item,d.position.x,d.position.y,d.position.z
+                    ))
+                    .collect();
+                log::info!(
+                    "Offline ecosystem {name}: server destroy drop_entities={} sample={}",
+                    new_drops,items.join(";")
+                );
+            }
+        }
         self.guest_crack_gone(host, conn, pos);
     }
 
@@ -4219,6 +4295,43 @@ impl Game<'_> {
         if mode == SPECTATOR || self.dropped.is_empty() {
             return;
         }
+        // Only opt-in same-process ecosystem bots are instrumented. A
+        // successful inventory transfer below is stronger evidence than
+        // a nearby entity, mining ACK or change in a later survey.
+        let eco_pickup_name=host.experimental_bots.as_ref()
+            .and_then(|_|host.hub.guests.get(gi))
+            .filter(|guest|guest.name.starts_with("EcoAI"))
+            .map(|guest|guest.name.clone());
+        if host.experimental_bots.is_some()
+            && host.hub.guests[gi].name.starts_with("EcoAI")
+            && host.hub.ticks.is_multiple_of(160)
+        {
+            // One bounded sample every eight simulated seconds, from real
+            // item entities and the guest's authoritative body position.
+            // Keep horizontal vs vertical pickup eligibility distinct.
+            let local:Vec<_>=self.dropped.iter().filter(|d|{
+                (d.position.x-position[0]).abs()<4.0
+                    && (d.position.z-position[2]).abs()<4.0
+                    && (d.position.y-position[1]).abs()<4.0
+            }).take(16).collect();
+            let horizontal=local.iter().filter(|d|{
+                (d.position.x-position[0]).abs()<1.5
+                    && (d.position.z-position[2]).abs()<1.5
+            }).count();
+            let touch=local.iter().filter(|d|{
+                d.pickup_delay==0
+                    && d.target.is_none_or(|t|t==uuid)
+                    && (d.position.x-position[0]).abs()<1.5
+                    && (d.position.z-position[2]).abs()<1.5
+                    && d.position.y>position[1]-0.6
+                    && d.position.y<position[1]+2.4
+            }).count();
+            log::info!(
+                "Offline ecosystem {}: item pickup geometry local_drops={} horizontal_near={} actually_touchable={} sampled_y={}",
+                host.hub.guests[gi].name,local.len(),horizontal,touch,
+                local.first().map_or("none".to_owned(),|d|format!("{:.2}",d.position.y))
+            );
+        }
         let near: Vec<_> = self
             .dropped
             .iter()
@@ -4249,11 +4362,16 @@ impl Game<'_> {
                 continue;
             }
             let stack = self.dropped[i].stack.clone();
+            let kind=stack.item.clone();
+            let tracked_wood=kind.ends_with("_log")||kind.ends_with("_stem");
             let before = stack.count;
             let thrower = self.dropped[i].thrower;
-            let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
-            match rest {
-                None => {
+            // Preserve the outer Option: None means the guest actor could
+            // not be entered, NOT that the entire item stack was accepted.
+            // Flattening these would falsely remove loot and report a pickup.
+            let transfer = self.as_guest(host, conn, |g| g.give(stack));
+            match transfer {
+                Some(None) => {
                     let item = self.remove_dropped(i);
                     if let Some(thrower) = thrower {
                         self.as_guest(host, conn, |g| {
@@ -4262,8 +4380,16 @@ impl Game<'_> {
                     }
                     self.guest_pickup(host, id, item);
                     taken.push((item_id, before));
+                    if tracked_wood {
+                        if let Some(name)=eco_pickup_name.as_deref(){
+                            log::info!(
+                                "Offline ecosystem {name}: server accepted wood pickup item={} count={} drop_entity={item_id}",
+                                kind,before
+                            );
+                        }
+                    }
                 }
-                Some(rest) if rest.count < before => {
+                Some(Some(rest)) if rest.count < before => {
                     self.guest_pickup(host, id, self.dropped[i].clone());
                     self.dropped[i].stack = rest;
                     if let Some(thrower) = thrower {
@@ -4272,9 +4398,18 @@ impl Game<'_> {
                             g.trigger_thrown_picked_up_by_player(&left, thrower);
                         });
                     }
-                    taken.push((item_id, before - self.dropped[i].stack.count));
+                    let transferred=before-self.dropped[i].stack.count;
+                    taken.push((item_id, transferred));
+                    if tracked_wood {
+                        if let Some(name)=eco_pickup_name.as_deref(){
+                            log::info!(
+                                "Offline ecosystem {name}: server accepted wood pickup item={} count={} drop_entity={item_id}",
+                                kind,transferred
+                            );
+                        }
+                    }
                 }
-                Some(_) => {}
+                _ => {} // Inventory full or guest actor unavailable.
             }
         }
         // Entity.take: the clients play the pickup sound themselves

@@ -1,0 +1,141 @@
+name: Offline ecosystem real-world integration
+# One-off trigger: file changes, plus optional workflow dispatch when available.
+# Retry after treeless plateau fix: allow verified downhill escape once
+# all connected flat cells are visited, including scans with zero logs.
+# First verified natural harvest (#41826770398): three real inventory gains.
+# Require at least one repeatable wood gain, two moving bots and no loop.
+# Multi-edge vertical loop regression: verify server-observed plateau transitions
+# do not repeat indefinitely; check actual wood inventory separately.
+# Connected wood-only trial (2026-11-04): confirm that the bot refuses
+# zero-access logs unless removing one opens a collision-safe standing surface.
+# Require real item and inventory evidence before calling harvest complete.
+# Access-aware natural wood trial (2026-11-04): verify whether first walking to a
+# connected loaded-world pickup stand improves real drop proximity and inventory.
+# Passing admission/mining alone must never count as a successful pickup.
+# Download only official pinned Mojang inputs into ephemeral .local/.
+# No Minecraft game resources are uploaded as artifacts.
+on:
+  push:
+    paths:
+      - '.github/workflows/offline-ecosystem-real-world.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecosystem-realworld-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-world:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      HORIZON_TELEMETRY_URL: 'off'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify locked Rust dependencies
+        run: cargo metadata --locked --format-version 1 --no-deps >/dev/null
+      - name: Restore Horizon-pinned 26.3 metadata
+        run: |
+          set -euo pipefail
+          mkdir -p .local/minecraft/26.3
+          curl -fL --retry 3 --retry-delay 2             https://piston-meta.mojang.com/v1/packages/11f1aefe473eefba0af62e3286c33b692807b2eb/26.3.json             -o .local/minecraft/26.3/manifest.json
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          metadata=Path('.local/minecraft/26.3/manifest.json').read_bytes()
+          actual=hashlib.sha1(metadata).hexdigest()
+          expected='11f1aefe473eefba0af62e3286c33b692807b2eb'
+          assert actual == expected, f'pinned manifest unexpectedly changed: {actual}'
+          PY
+      - name: Prepare private Minecraft resources from official pinned downloads
+        run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
+      - name: Assert server-authoritative movement and real block action
+        run: cargo test -p horizon-client --locked --no-default-features --test lan_bot offline_ecosystem_ -- --nocapture
+      - name: Test memory-driven exploration and evidence accounting
+        run: cargo test --locked -p horizon-offline-ecosystem-core
+      - name: Build test game binary
+        run: cargo build -p horizon-client --locked --no-default-features --bin horizon-client
+      # Compare server-observed movement after stalled-step quarantine.
+      # Check a reachable standing-surface frontier when a real drop lies
+      # beyond the current safe-grid pickup target; diagnose missing routes.
+      # Exercise normal survival mining of reachable upper trunk logs,
+      # so falling drops may enter the player's pickup box without a jump.
+      # Re-test the complete real wood pickup loop while verifying that
+      # recent authoritative downhill/uphill landings no longer cause
+      # exploration to reverse the same vertical edge indefinitely.
+      # Enable pinned real block collisions in the LAN stone-ledge jump
+      # fixture; require a genuine server-authoritative landing.
+      # Re-run the LAN step-up fixture after correcting its public crate
+      # import, and try uphill exploration in the pinned natural world.
+      # Run a deterministic stone-ledge survival jump test in the real
+      # collision-aware in-memory LAN Hub before the natural-world probe.
+      # Exercise genuine multi-bot wood scavenging: a surviving item
+      # can be pursued after its original harvest record expires, with
+      # only connected server-verified terrain and actual inventory credit.
+      # Prefer log targets whose expected drops have an observed
+      # physical pickup stand, and recover when a real drop stays out of
+      # reach across eight successive server terrain surveys. This is
+      # never a fabricated inventory increment.
+      # Test ordinary one-block survival jumps for server-confirmed
+      # uphill approaches to naturally generated logs and dropped items.
+      # Preserve collision and ground flags; never fake a wood pickup.
+      # Route natural lower tree trunks through executable server-checked
+      # walking/one-block descent before ordinary mining and genuine pickup.
+      # Prefer a verified lower path when naturally visible wood cannot
+      # be approached from the current elevation, even if flat tiles exist.
+      # Measure exploratory descent attempts separately from server landings.
+      # Reject visible but unapproachable trees and escape small isolated
+      # spawn ground patches through strictly verified downhill movements.
+      # Test 11x11x3 real standing-surface scans and a one-pass
+      # connected walk/down detour toward actual wood drops. No jump,
+      # teleport, resource spawning, or unverified inventory rewards.
+      # Execute bounded one-block downhill survival packets when the
+      # server has verified the lower standing surface. Report only
+      # server-authoritative landing confirmations and actual inventory.
+      # Test the bounded 13x13 natural-wood sensor and safe-ground frontier
+      # progression after prior seeded-world runs found zero nearby logs.
+      # Navigate toward bounded, server-sensed dropped item coordinates,
+      # not the guessed mined block center; preserve normal pickup rules.
+      # Prefer collectable-height logs and quantify genuine item drops,
+      # player-distance constraints and inventory accounting.
+      # Probe the longer, bounded 400-tick harvest window and ensure
+      # the bot stays near the watched block until its removal is observed.
+      # Diagnose actual guest_destroy result and the world block state,
+      # not just an accepted START/STOP decision, before crediting inventory.
+      # Log authoritative START/STOP mining gate decisions alongside pickups.
+      # Includes the mutable server reach-check diagnostic fix.
+      # Neither login, packet emission nor START proves resource collection.
+      # Report nearby loaded y-1/y/y+1 standing surfaces as obstacles.
+      - name: Diagnose real-world movement and harvesting for two loaded bots
+        run: |
+          python3 -m unittest discover -s external/offline-ecosystem/reference/tests -p test_ci_live_world.py -v
+          python3 external/offline-ecosystem/ci_live_world.py \
+            --binary target/debug/horizon-client \
+            --resources .local/horizon-client/26.3 \
+            --scratch .local/ecosystem-headless \
+            --timeout-seconds 140 \
+            --post-ready-seconds 70 \
+            --min-moving-bots 2 \
+            --min-excursion-blocks 1 \
+            --min-wood-gain 1
+      - name: Check resource boundary
+        if: always()
+        run: |
+          git diff --exit-code -- . ':!Cargo.lock'
+          python3 tools/check_public_tree.py

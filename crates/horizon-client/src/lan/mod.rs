@@ -1018,4 +1018,70 @@ mod tests {
         drop((held, newcomer));
         assert_eq!(shared.connections.load(Ordering::Acquire), 0);
     }
+
+    /// Multi-bot acceptance must not silently coalesce different local
+    /// profiles into the same guest or share a protocol connection.
+    #[test]
+    fn offline_ecosystem_three_local_players_have_distinct_identities(){
+        use std::collections::HashSet;
+        use horizon_offline_ecosystem_client::LocalPlayer;
+        let config=NetConfig{
+            listen:false,announce:false,
+            ..NetConfig::lan(0,"Ecosystem multi-login".into(),8)
+        };
+        let lan=Lan::start_with(Arc::new(data::SyncData::empty()),config)
+            .expect("start real local LAN");
+        let bots=(0..3).map(|i|{
+            let pipe=lan.connect_local().expect("create independent local pipe");
+            let name=format!("EcoNative{i}");
+            LocalPlayer::join(pipe,&name,2).expect("local bot joins")
+        }).collect::<Vec<_>>();
+        assert_eq!(bots.len(),3);
+        let mut names=HashSet::new();
+        let mut uuids=HashSet::new();
+        let mut conns=HashSet::new();
+        let deadline=Instant::now()+Duration::from_secs(6);
+        while names.len()<3{
+            for event in lan.poll(){
+                if let NetEvent::Joined(guest)=event{
+                    assert_eq!(guest.brand,"horizon");
+                    assert!(names.insert(guest.name));
+                    assert!(uuids.insert(guest.uuid));
+                    assert!(conns.insert(guest.conn));
+                }
+            }
+            assert!(Instant::now()<deadline,"not all local players reached play state");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(names.len(),3);
+        assert_eq!(uuids.len(),3);
+        assert_eq!(conns.len(),3);
+    }
+    /// Uses Horizon's real local authentication, configuration and connection
+    /// thread; unlike the big LAN world fixture it needs no Mojang assets.
+    #[test]
+    fn offline_ecosystem_local_player_joins_real_lan_without_resources() {
+        use horizon_offline_ecosystem_client::LocalPlayer;
+        let config=NetConfig{
+            listen:false,
+            announce:false,
+            ..NetConfig::lan(0,"Ecosystem local test".into(),4)
+        };
+        let lan=Lan::start_with(Arc::new(data::SyncData::empty()),config)
+            .expect("start actual Horizon LAN");
+        let pipe=lan.connect_local().expect("in-memory server connection");
+        let bot=LocalPlayer::join(pipe,"EcoNative0",2)
+            .expect("native local protocol join");
+        assert_eq!(bot.name(),"EcoNative0");
+        let deadline=Instant::now()+Duration::from_secs(5);
+        loop{
+            let events=lan.poll();
+            if events.iter().any(|event|matches!(event,NetEvent::Joined(_))){
+                break;
+            }
+            assert!(Instant::now()<deadline,"real LAN didn't report the local bot join");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
 }

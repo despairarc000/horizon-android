@@ -2,6 +2,7 @@
 //! handshake, status, offline login, configuration (registries and tags),
 //! then the play state (login, chunks with light, player list, entities,
 //! block changes). Needs the prepared resources; skipped without them.
+use horizon_offline_ecosystem_client::LocalPlayer;
 use horizon_client::{
     chunk::{Chunk, MIN_Y},
     lan::{
@@ -166,6 +167,8 @@ fn connect(port: u16, name: &str, known_pack: bool) -> Result<Bot, String> {
 struct Server {
     hub: Hub,
     world: World,
+    /// Optional real cached block-collision registry for movement tests.
+    collision: Option<horizon_world::block_collision::BlockCollisionRegistry<'static>>,
     next_entity: u32,
     placed: Vec<(u32, [i32; 3], u32, i32)>,
 }
@@ -204,7 +207,7 @@ impl Server {
             tick_rate: 20.0,
             tick_frozen: false,
             tick_steps: (0, 0),
-            collision: None,
+            collision: self.collision.as_ref(),
             border: &horizon_client::worldborder::WorldBorder::default(),
             streaming: None,
         };
@@ -274,6 +277,7 @@ fn server_with(resources: &Path, net: NetConfig) -> Server {
     Server {
         hub,
         world: flat_world(),
+        collision: None,
         next_entity: 100,
         placed: Vec::new(),
     }
@@ -1445,4 +1449,111 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         s.hub.guests[0].client_loaded(),
         "the packet marks it loaded"
     );
+}
+
+/// In-memory protocol regression against the real Horizon LAN hub,
+/// survival game mode, and a one-block stone step. This test explicitly
+/// enables Horizon's version-pinned block-collision registry so motion
+/// must pass server collision checks, not just parse transport packets.
+/// It does not prove natural wood pickup or the whole game simulation.
+#[test]
+fn offline_ecosystem_survival_jump_lands_on_server_known_stone_step(){
+    use ecosystem_core::terrain_path::StepUpController;
+    let Some(resources)=resources() else{return;};
+    let mut server=server(&resources);
+    server.hub.config.default_game_mode=0;
+    server.hub.config.allow_flight=false;
+    let assets=horizon_client::assets::Assets::load(&resources)
+        .expect("load official collision assets");
+    assert_eq!(
+        assets.registry.state(BlockStateId(STONE))
+            .expect("stone state present").name,
+        "minecraft:stone",
+        "collision fixture's stone state must match the real registry"
+    );
+    server.collision=Some(horizon_client::collisions::load(
+        &resources,assets.registry
+    ).expect("pinned Minecraft collision registry"));
+    // Spawn is [8.5,MIN_Y+5,8.5]; place a genuine solid step ahead.
+    // No drops, commands, teleport-based movement, or inventory rewards.
+    let higher=[9,MIN_Y+5,8];
+    server.world.set(higher[0],higher[1],higher[2],BlockStateId(STONE))
+        .unwrap();
+    let pipe=server.hub.lan.connect_local().expect("in-memory LAN pipe");
+    let predicted=run(&mut server,move||{
+        let mut player=LocalPlayer::join(pipe,"EcosystemJump",3)?;
+        let deadline=Instant::now()+Duration::from_secs(20);
+        while !player.state.ready{
+            if Instant::now()>deadline{return Err("no prepared chunk after login".into());}
+            player.pump_one()?;
+        }
+        let spawn=player.state.position.ok_or("spawn missing")?;
+        let destination=[9,MIN_Y+6,8];
+        let mut controller=StepUpController::begin(spawn,destination)
+            .ok_or("no verified one-block jump geometry")?;
+        let mut requested_landing=false;
+        for _ in 0..18{
+            let at=player.state.position.ok_or("missing local position")?;
+            let Some(m)=controller.next(at) else {break;};
+            player.jump_delta(m.dx,m.dy,m.dz,m.on_ground)?;
+            player.client_tick_end()?;
+            if m.on_ground {requested_landing=true;break;}
+            thread::sleep(Duration::from_millis(40));
+        }
+        if !requested_landing {
+            return Err("bounded jump could not produce a ground-contact request".into());
+        }
+        thread::sleep(Duration::from_millis(150));
+        Ok(player.state.position.ok_or("missing predicted landing")?)
+    });
+    let guest=server.hub.guests.iter()
+        .find(|g|g.name=="EcosystemJump").expect("guest not found");
+    assert_eq!(guest.game_mode,0,"fixture must test survival mode");
+    assert!((guest.position[0]-predicted[0]).abs()<0.20,
+        "normal Hub movement never accepted the horizontal jump");
+    assert!((guest.position[1]-f64::from(MIN_Y+6)).abs()<0.15,
+        "Hub did not accept the higher landing in physical server position");
+    assert!(guest.on_ground,"server did not confirm the player on ground");
+}
+
+#[test]
+fn offline_ecosystem_player_joins_real_horizon_hub_through_memory(){
+    // Unlike the standalone fake-server tests, this exercises Horizon's
+    // actual LAN handshake, chunk scheduler, entity list and block event hub.
+    // Prepared Minecraft resources are required (existing lan_bot convention).
+    let Some(resources)=resources() else {return;};
+    let mut server=server(&resources);
+    let pipe=server.hub.lan.connect_local().expect("local in-memory connection");
+    let outcome=run(&mut server, move || {
+        let mut player=LocalPlayer::join(pipe,"Ecosystem0",3)?;
+        let deadline=Instant::now()+Duration::from_secs(20);
+        while !player.state.ready {
+            if Instant::now()>deadline{return Err("no real-world chunks after login".into());}
+            player.pump_one()?;
+        }
+        let spawn=player.state.position.ok_or("no position")?;
+        let move_to=player.walk_delta(0.2,0.0)?;
+        player.use_item_on([
+            spawn[0].floor() as i32,
+            spawn[1].floor() as i32 - 1,
+            spawn[2].floor() as i32
+        ],1,818)?;
+        let deadline=Instant::now()+Duration::from_secs(15);
+        while player.state.last_block_ack != Some(818) {
+            if Instant::now()>deadline{return Err("hub did not acknowledge block-use".into());}
+            player.pump_one()?;
+        }
+        Ok((spawn,move_to,player.state.last_block_update))
+    });
+    assert!((outcome.1[0]-outcome.0[0]-0.2).abs()<0.001);
+    let guest=server.hub.guests.iter().find(|g|g.name=="Ecosystem0")
+        .expect("real Hub must still own the local player");
+    assert!(guest.placed && guest.loaded,
+        "Horizon did not complete the real player lifecycle");
+    assert!((guest.position[0]-outcome.1[0]).abs()<0.02,
+        "movement must be accepted by the authoritative Hub, not just predicted locally");
+    assert!(server.placed.iter().any(|entry|entry.3==818),
+        "the real hub did not deliver the local player's block action");
+    // The LAN fixture places blocks to test event dispatch; this assertion
+    // does NOT claim that real survival inventory/reach were validated.
 }

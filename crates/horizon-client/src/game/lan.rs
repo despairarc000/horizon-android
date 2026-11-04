@@ -196,6 +196,8 @@ pub(super) struct LanHost {
     /// The entities the guests track, described again every tick
     /// (`lan_entities`) over last tick's states.
     pub(super) states: lan::entity::States,
+    /// Opt-in experimental local bot players. None in normal play.
+    pub(super) experimental_bots: Option<super::offline_ecosystem::ExperimentalBots>,
 }
 
 impl LanHost {
@@ -1406,6 +1408,7 @@ impl Game<'_> {
         hub.flat_world = self.world_flat;
         hub.debug_world = self.world_debug;
         let port = hub.lan.port;
+        let experimental_bots = super::offline_ecosystem::ExperimentalBots::start(&hub);
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());
         self.lan = Some(LanHost {
@@ -1432,6 +1435,7 @@ impl Game<'_> {
             native_commands: None,
             sleep_ignored: Default::default(),
             states: Default::default(),
+            experimental_bots,
         });
         self.audio.capture = Some(Vec::new());
         Ok(())
@@ -2350,6 +2354,61 @@ impl Game<'_> {
         self.lan_sync_scoreboard(&mut host);
         self.lan_sync_border(&mut host);
         host.hub.anticheat_ping();
+        if !paused {
+            if let Some(bots)=&mut host.experimental_bots {
+                bots.survey(&host.hub.guests, self.dim.id(), |position|{
+                    let [x,y,z]=position;
+                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return None;}
+                    let name=&self.res.facts().get(self.world.block(x,y,z)).name;
+                    Some(name.ends_with("_log") || name.ends_with("_stem"))
+                },|item|{
+                    self.res.items().get(item).is_some_and(|info|info.food.is_some())
+                },|position|{
+                    let [x,y,z]=position;
+                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return false;}
+                    let facts=self.res.facts();
+                    let below=facts.get(self.world.block(x,y-1,z));
+                    let at=facts.get(self.world.block(x,y,z));
+                    let above=facts.get(self.world.block(x,y+1,z));
+                    below.full_collision && below.fluid_level==0
+                        && !at.full_collision && at.fluid_level==0
+                        && !above.full_collision && above.fluid_level==0
+                },|position|{
+                    // Only actual item entities local to this player, with
+                    // physically available wood in their ItemStack.
+                    let mut nearby:Vec<[f64;3]>=self.dropped.iter()
+                        .filter(|d| {
+                            let id=d.stack.item.as_ref();
+                            id.ends_with("_log") || id.ends_with("_stem")
+                        })
+                        .map(|d|[d.position.x,d.position.y,d.position.z])
+                        .filter(|p|p.iter().all(|v|v.is_finite())
+                            && (p[0]-position[0]).abs()<=6.0
+                            && (p[1]-position[1]).abs()<=4.0
+                            && (p[2]-position[2]).abs()<=6.0)
+                        .collect();
+                    let score=|p:&[f64;3]|(p[0]-position[0]).powi(2)
+                        +(p[1]-position[1]).powi(2)
+                        +(p[2]-position[2]).powi(2);
+                    nearby.sort_by(|a,b|score(a).total_cmp(&score(b)));
+                    nearby.truncate(16);
+                    nearby
+                },|position|{
+                    // Survey only observed logs whose own removal would
+                    // uncover a supported, two-block-high standing cell.
+                    // The current world is never modified by this probe.
+                    let [x,y,z]=position;
+                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return false;}
+                    let facts=self.res.facts();
+                    let here=facts.get(self.world.block(x,y,z));
+                    let below=facts.get(self.world.block(x,y-1,z));
+                    let above=facts.get(self.world.block(x,y+1,z));
+                    (here.name.ends_with("_log")||here.name.ends_with("_stem"))
+                        && below.full_collision && below.fluid_level==0
+                        && !above.full_collision && above.fluid_level==0
+                });
+            }
+        }
         drop(holding);
         self.flush_native_net(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
