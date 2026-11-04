@@ -86,8 +86,11 @@ impl TargetMemory {
                 position[2].floor() as i32,
             ];
             let p = remembered.pos;
-            let in_survey = (p[0] - center[0]).abs() <= 3
-                && (p[2] - center[2]).abs() <= 3
+            // Keep memory's negative evidence aligned with the caller's
+            // 13x13 loaded-block resource sensor. Use wide arithmetic to
+            // avoid subtraction overflow at world coordinate extremes.
+            let in_survey = (i64::from(p[0]) - i64::from(center[0])).abs() <= 6
+                && (i64::from(p[2]) - i64::from(center[2])).abs() <= 6
                 && (-1..=2).contains(&(p[1] - center[1]));
             if tick.saturating_sub(remembered.tick) > MEMORY_TICKS
                 || (in_survey && !visible.contains(&p))
@@ -196,9 +199,12 @@ mod tests {
         // evidence is authoritative, so memory must be cleared.
         assert_eq!(m.observe(9, [0.5,64.,0.5], &[]), None);
         m.observe(17, [0.5,64.,0.5], &[first]);
-        // Target is outside the new scan; investigate where it was last seen.
-        assert_eq!(m.observe(25, [6.5,64.,0.5], &[]), Some(first));
-        assert_eq!(m.observe(178, [6.5,64.,0.5], &[]), None);
+        // A wider local scan can disprove a missing remembered log.
+        assert_eq!(m.observe(25, [6.5,64.,0.5], &[]), None);
+        m.observe(33, [0.5,64.,0.5], &[first]);
+        // Outside the 13x13 observed window, short-lived memory remains.
+        assert_eq!(m.observe(41, [9.5,64.,0.5], &[]), Some(first));
+        assert_eq!(m.observe(194, [9.5,64.,0.5], &[]), None);
     }
 
     #[test]
