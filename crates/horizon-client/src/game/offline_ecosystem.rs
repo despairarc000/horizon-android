@@ -19,6 +19,7 @@ use ecosystem_core::{
     harvest::{HarvestEvidence,HarvestStatus},
     local_path::{first_ground_step,neighboring_resource_goals},
     explore::ExplorationMemory,
+    terrain_path::{first_terrain_step,RouteMotion,RouteStep},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -41,6 +42,8 @@ struct Survey {
     /// Loaded, approximately level ground tiles with full support and
     /// two-block clearance. Never an omniscient traversability map.
     ground: Vec<[i32;2]>,
+    /// Server-verified 7x7x3 standing surfaces, for safe route planning.
+    terrain: Vec<[i32;3]>,
     /// At most 32 nearby real server blocks within a 13x13 search.
     /// Only loaded cells; not yet an occlusion-aware view.
     logs: Vec<[i32; 3]>,
@@ -283,6 +286,24 @@ fn ground_step_to_drop(survey:&Survey, drop:[f64;3])->Option<[f64;2]>{
     let step=first_ground_step(start,&goals,&survey.ground)?;
     Some([f64::from(step[0])+0.5,f64::from(step[1])+0.5])
 }
+/// Identify actual safe-level changes toward a drop that cannot be collected
+/// from the current feet elevation. These are PLANS, not movement packets.
+fn terrain_step_to_drop(survey:&Survey,drop:[f64;3])->Option<RouteStep>{
+    if !drop.iter().all(|x|x.is_finite()){return None;}
+    let start=[
+        survey.position[0].floor() as i32,
+        survey.position[1].floor() as i32,
+        survey.position[2].floor() as i32,
+    ];
+    let goals:Vec<[i32;3]>=survey.terrain.iter().copied()
+        .filter(|p|{
+            let feet=f64::from(p[1]);
+            drop[1]>feet-0.6 && drop[1]<feet+2.4
+                && (f64::from(p[0])+0.5-drop[0]).abs()<1.5
+                && (f64::from(p[2])+0.5-drop[2]).abs()<1.5
+        }).collect();
+    first_terrain_step(start,&goals,&survey.terrain)
+}
 
 impl ExperimentalBots {
     pub(super) fn start(hub:&Hub)->Option<Self>{
@@ -385,6 +406,7 @@ impl ExperimentalBots {
                 nearby_log:nearest,
                 watched_log,
                 ground,
+                terrain,
                 logs,
                 wood_drops,
             });
@@ -641,6 +663,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,logs:vec![],
             wood_drops:vec![[2.6,64.1,0.5]],ground:vec![[0,0],[1,0],[2,0]],
+            terrain:vec![[0,64,0],[1,64,0],[2,64,0]],
         };
         assert_eq!(watched_wood_drop(&survey,[2,64,0]),Some([2.6,64.1,0.5]));
         assert_eq!(ground_step_to_drop(&survey,[2.6,64.1,0.5]),Some([1.5,0.5]));
@@ -649,6 +672,23 @@ mod tests{
         assert_eq!(ground_step_to_drop(&survey,[2.6,64.1,0.5]),None);
         survey.wood_drops=vec![[7.5,64.0,0.5]];
         assert_eq!(watched_wood_drop(&survey,[2,64,0]),None);
+    }
+    #[test]
+    fn lower_real_item_routes_as_descent_without_making_the_player_fly(){
+        let mut survey=Survey{
+            tick:0,position:[0.5,65.0,0.5],food:20,health:20.0,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
+            nearby_log:None,watched_log:None,logs:vec![],
+            wood_drops:vec![[2.5,64.15,0.5]],
+            ground:vec![[0,0]],terrain:vec![[0,65,0],[1,64,0],[2,64,0]],
+        };
+        assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),
+            Some(RouteStep{at:[1,64,0],motion:RouteMotion::StepDown}));
+        survey.terrain=vec![[0,65,0],[1,65,0],[2,64,0]];
+        assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),
+            Some(RouteStep{at:[1,65,0],motion:RouteMotion::Walk}));
+        survey.terrain=vec![[0,65,0],[2,64,0]];
+        assert_eq!(terrain_step_to_drop(&survey,[2.5,64.15,0.5]),None);
     }
     #[test]fn opt_in_must_be_bounded(){
         assert_eq!(configured_count(None),0);
@@ -663,7 +703,7 @@ mod tests{
             position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None,watched_log:None,ground:vec![[0,0]], logs:vec![],
-            wood_drops:vec![],
+            wood_drops:vec![],terrain:vec![[0,64,0]],
         };
         assert_eq!(decide(&survey,0),Intent::Explore);
         survey.nearby_log=Some([1,64,0]);
@@ -709,6 +749,7 @@ mod tests{
             nearby_log:Some([6,64,0]),watched_log:None,
             ground:vec![[0,0],[1,0],[2,0],[3,0]],
             logs:vec![[6,64,0]],wood_drops:vec![],
+            terrain:vec![[0,64,0],[1,64,0],[2,64,0],[3,64,0]],
         };
         assert_eq!(ground_step_to_log(&s,[6,64,0]),Some([1.5,0.5]));
         // A disconnected tile near a tree does not become a magical path.
@@ -759,6 +800,7 @@ mod tests{
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:Some([3,64,0]),watched_log:None,logs:vec![[3,64,0]],
             wood_drops:vec![],ground:vec![[0,0],[0,1],[1,1],[2,1],[3,1]],
+            terrain:vec![[0,64,0],[0,64,1],[1,64,1],[2,64,1],[3,64,1]],
         };
         assert_eq!(ground_step_to_log(&s,[3,64,0]),Some([0.5,1.5]));
         s.ground=vec![[0,0],[3,1]];
