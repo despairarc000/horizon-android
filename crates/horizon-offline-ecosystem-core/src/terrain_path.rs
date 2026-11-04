@@ -79,6 +79,39 @@ fn route_step(
     None
 }
 
+/// Standing surfaces connected to the player's *observed* start in the
+/// bounded graph. This is one flood fill reused by the server resource
+/// scanner instead of running a path search for each visible block.
+///
+/// These are candidate routes, NOT successful movement or proof that
+/// the client can execute a jump. The real server remains authoritative.
+pub fn connected_terrain_stands(
+    start:[i32;3], confirmed_stands:&[[i32;3]]
+)->Vec<[i32;3]>{
+    if confirmed_stands.is_empty()||confirmed_stands.len()>MAX_KNOWN_STANDS{
+        return Vec::new();
+    }
+    let safe:BTreeSet<_>=confirmed_stands.iter().copied().collect();
+    if !safe.contains(&start){return Vec::new();}
+    let mut seen=BTreeSet::from([start]);
+    let mut queue=VecDeque::from([start]);
+    while let Some(p)=queue.pop_front(){
+        for (dx,dz) in [(0,-1),(1,0),(0,1),(-1,0)]{
+            let (Some(x),Some(z))=(p[0].checked_add(dx),p[2].checked_add(dz)) else {
+                continue;
+            };
+            for dy in [0,-1,1]{
+                let Some(y)=p[1].checked_add(dy) else {continue;};
+                let to=[x,y,z];
+                if safe.contains(&to)&&seen.insert(to){
+                    queue.push_back(to);
+                }
+            }
+        }
+    }
+    seen.into_iter().collect()
+}
+
 /// In one bounded flood fill, find the best EXECUTABLE reachable frontier
 /// with a meaningful score improvement over the current standing cell.
 /// The chosen first step can initially move AWAY from the goal, allowing
@@ -303,6 +336,23 @@ pub fn adjacent_terrain_goals(log:[i32;3],stands:&[[i32;3]])->Vec<[i32;3]>{
 mod tests{
     use super::*;
 
+    #[test]
+    fn connected_stands_exclude_disconnected_and_unobserved_cells(){
+        let stands=[[0,64,0],[1,64,0],[2,65,0],[2,65,1],
+            [5,64,0],[6,64,0]];
+        assert_eq!(connected_terrain_stands([0,64,0],&stands),
+            vec![[0,64,0],[1,64,0],[2,65,0],[2,65,1]]);
+        assert!(connected_terrain_stands([3,64,0],&stands).is_empty());
+        assert_eq!(connected_terrain_stands([5,64,0],&stands),
+            vec![[5,64,0],[6,64,0]]);
+    }
+    #[test]
+    fn connected_stands_reject_more_than_bounded_observation(){
+        let stands:Vec<_>=(0..=MAX_KNOWN_STANDS)
+            .map(|x|[x as i32,64,0]).collect();
+        assert!(connected_terrain_stands([0,64,0],&stands).is_empty());
+        assert!(connected_terrain_stands([0,64,0],&[]).is_empty());
+    }
     #[test]
     fn uphill_jump_is_only_one_cardinal_block(){
         assert!(StepUpController::begin([0.5,64.0,0.5],[1,65,0]).is_some());
