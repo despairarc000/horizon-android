@@ -764,6 +764,7 @@ fn run_local(
 )->Result<(),String>{
     let mut player=LocalPlayer::join(pipe,name,2)?;
     let mut exploration=ExplorationMemory::new();
+    let mut resource_confined=false;
     let mut vertical_memory=VerticalTransitionMemory::new();
     let mut steering=SteeringEvidence::default();
     let mut next_tick=Instant::now();
@@ -874,6 +875,19 @@ fn run_local(
             received.nearby_log=target_memory.observe(
                 received.tick,received.position,&walkable_height
             );
+            let usable_wood=received.nearby_log
+                .is_some_and(|p|walkable_height.contains(&p));
+            let now_confined=exploration.resource_search_confined(
+                received.tick,
+                [received.position[0],received.position[2]],
+                usable_wood
+            );
+            if now_confined && !resource_confined {
+                log::info!(
+                    "Offline ecosystem {name}: repeated server-observed logless exploration within five blocks; seeking verified vertical escape"
+                );
+            }
+            resource_confined=now_confined;
             if let Some(blocked) = exploration.observe_server_position(
                 received.tick, [received.position[0], received.position[2]]
             ) {
@@ -1292,7 +1306,7 @@ fn run_local(
             // outside the bounded sensor even while logs.is_empty().
             let seek_vertical=should_seek_vertical(
                 flat_exhausted,flat_step.is_some()
-            );
+            ) || resource_confined;
             let current=[
                 survey.position[0].floor() as i32,
                 survey.position[1].floor() as i32,
