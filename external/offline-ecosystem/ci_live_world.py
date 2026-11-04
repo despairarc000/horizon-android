@@ -210,6 +210,42 @@ def server_destroy_report(lines: list[str]) -> dict[str, int]:
     return result
 
 
+SERVER_ITEM_DROPS = re.compile(
+    r"Offline ecosystem (EcoAI[01]): server destroy drop_entities=(\d+) sample=(.*)"
+)
+ITEM_PICKUP_GEOMETRY = re.compile(
+    r"Offline ecosystem (EcoAI[01]): item pickup geometry "
+    r"local_drops=(\d+) horizontal_near=(\d+) "
+    r"actually_touchable=(\d+) sampled_y=(.*)"
+)
+
+
+def item_pickup_report(lines: list[str]) -> dict[str, int]:
+    # Spatial eligibility is not a successful give() or inventory gain.
+    result = {
+        "new_server_drop_entities": 0,
+        "sampled_pickup_checks": 0,
+        "max_local_drop_entities": 0,
+        "max_horizontally_near": 0,
+        "max_touchable": 0,
+    }
+    for line in lines:
+        if match := SERVER_ITEM_DROPS.search(line):
+            result["new_server_drop_entities"] += int(match.group(2))
+        if match := ITEM_PICKUP_GEOMETRY.search(line):
+            result["sampled_pickup_checks"] += 1
+            result["max_local_drop_entities"] = max(
+                result["max_local_drop_entities"], int(match.group(2))
+            )
+            result["max_horizontally_near"] = max(
+                result["max_horizontally_near"], int(match.group(3))
+            )
+            result["max_touchable"] = max(
+                result["max_touchable"], int(match.group(4))
+            )
+    return result
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -300,6 +336,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Bot steering transport diagnostics (not confirmed motion): {steering_report(lines)}")
     print(f"Server-side survival mining decisions: {server_mining_report(lines)}")
     print(f"Actual server destruction outcomes: {server_destroy_report(lines)}")
+    print(f"Physical drops and pickup geometry (not confirmed inventory): {item_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
