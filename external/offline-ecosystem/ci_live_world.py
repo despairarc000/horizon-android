@@ -309,6 +309,21 @@ def uphill_report(lines: list[str]) -> dict[str, int]:
     }
 
 
+BLOCKED_PICKUP_RELEASE = re.compile(
+    r"Offline ecosystem (EcoAI[01]): observed drop still inaccessible "
+    r"after 8 server surveys; no pickup or inventory credit"
+)
+
+
+def blocked_pickup_report(lines: list[str]) -> dict[str, int]:
+    """Abandoning unreachable loot is recovery, NEVER a resource gain."""
+    return {
+        "blocked_drop_releases": sum(
+            bool(BLOCKED_PICKUP_RELEASE.search(line)) for line in lines
+        ),
+    }
+
+
 def harvest_report(lines: list[str]) -> dict[str,int]:
     return {
         "mining_attempts":sum("mining attempt started at" in line for line in lines),
@@ -402,6 +417,7 @@ def run(binary: pathlib.Path, resources: pathlib.Path, scratch: pathlib.Path,
     print(f"Survival downhill movement evidence: {downhill_report(lines)}")
     print(f"Survival uphill movement evidence: {uphill_report(lines)}")
     print(f"Physical drops and pickup geometry (not confirmed inventory): {item_pickup_report(lines)}")
+    print(f"Inaccessible dropped item recovery (no pickup): {blocked_pickup_report(lines)}")
     print(f"Additional real-world harvesting observations: {harvest_report(lines)}")
     if not reached or not held_for_requested_period:
         print(f"Headless process exit: {process.returncode}; log: {console}")
