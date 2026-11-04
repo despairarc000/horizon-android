@@ -54,7 +54,7 @@ jobs:
       - name: Prepare private Minecraft resources from official pinned downloads
         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
       - name: Assert server-authoritative movement and real block action
-        run: cargo test -p horizon-client --locked --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
+        run: cargo test -p horizon-client --locked --no-default-features --test lan_bot offline_ecosystem_ -- --nocapture
       - name: Test memory-driven exploration and evidence accounting
         run: cargo test --locked -p horizon-offline-ecosystem-core
       - name: Build test game binary
@@ -64,6 +64,8 @@ jobs:
       # beyond the current safe-grid pickup target; diagnose missing routes.
       # Exercise normal survival mining of reachable upper trunk logs,
       # so falling drops may enter the player's pickup box without a jump.
+      # Run a deterministic stone-ledge survival jump test in the real
+      # collision-aware in-memory LAN Hub before the natural-world probe.
       # Test ordinary one-block survival jumps for server-confirmed
       # uphill approaches to naturally generated logs and dropped items.
       # Preserve collision and ground flags; never fake a wood pickup.
