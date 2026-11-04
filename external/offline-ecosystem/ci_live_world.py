@@ -78,11 +78,20 @@ def terrain_report(lines: list[str]) -> dict[str,dict[str,int|float|bool]]:
             continue
         first=samples[0]
         last=samples[-1]
+        # Only published server position samples count. A bot could have
+        # moved between samples and returned to spawn; never claim otherwise.
+        xz_distance=lambda a,b:((a[0]-b[0])**2+(a[2]-b[2])**2)**0.5
         result[name]={
             "samples":len(samples),
-            "horizontal_displacement":round(
-                ((last[0]-first[0])**2+(last[2]-first[2])**2)**0.5,2
+            "horizontal_displacement":round(xz_distance(first,last),2),
+            "max_sampled_excursion":round(
+                max(xz_distance(first,point) for point in samples),2
             ),
+            "sampled_path_length":round(
+                sum(xz_distance(a,b) for a,b in zip(samples,samples[1:])),2
+            ),
+            "min_sampled_y":min(point[1] for point in samples),
+            "max_sampled_y":max(point[1] for point in samples),
             "first_lower_stands":first[3],
             "first_higher_stands":first[4],
             "initial_column_standable":first[5],
