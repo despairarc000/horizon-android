@@ -1,5 +1,7 @@
 name: Offline ecosystem real-world integration
 # One-off trigger: file changes, plus optional workflow dispatch when available.
+# Retry after treeless plateau fix: allow verified downhill escape once
+# all connected flat cells are visited, including scans with zero logs.
 # First verified natural harvest (#41826770398): three real inventory gains.
 # Require at least one repeatable wood gain, two moving bots and no loop.
 # Multi-edge vertical loop regression: verify server-observed plateau transitions
