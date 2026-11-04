@@ -4158,6 +4158,9 @@ impl Game<'_> {
         let before = diagnostic_name.as_ref().map(|_| self.world.block(
             pos[0], pos[1], pos[2]
         ));
+        // Entity IDs are monotonic. This records dropped item entities
+        // created by this single synchronous break without changing loot.
+        let prior_entity_id=diagnostic_name.as_ref().map(|_|self.next_entity);
         // Do not discard a failure from the actual survival destruction
         // path. In particular, STOP=Break alone proves no world mutation.
         let outcome = self.as_guest(host, conn, |g| g.break_block(pos));
@@ -4175,6 +4178,20 @@ impl Game<'_> {
                 before_state != after, post_block.name,
                 self.res.facts().is_air(after)
             );
+            if let Some(before_id)=prior_entity_id{
+                let items:Vec<_>=self.dropped.iter()
+                    .filter(|d|d.id>before_id)
+                    .take(8)
+                    .map(|d|format!(
+                        "{}@{:.2},{:.2},{:.2}",
+                        d.stack.item,d.position.x,d.position.y,d.position.z
+                    ))
+                    .collect();
+                log::info!(
+                    "Offline ecosystem {name}: server destroy drop_entities={} sample={}",
+                    items.len(),items.join(";")
+                );
+            }
         }
         self.guest_crack_gone(host, conn, pos);
     }
@@ -4276,6 +4293,36 @@ impl Game<'_> {
         };
         if mode == SPECTATOR || self.dropped.is_empty() {
             return;
+        }
+        if host.experimental_bots.is_some()
+            && host.hub.guests[gi].name.starts_with("EcoAI")
+            && host.hub.ticks.is_multiple_of(160)
+        {
+            // One bounded sample every eight simulated seconds, from real
+            // item entities and the guest's authoritative body position.
+            // Keep horizontal vs vertical pickup eligibility distinct.
+            let local:Vec<_>=self.dropped.iter().filter(|d|{
+                (d.position.x-position[0]).abs()<4.0
+                    && (d.position.z-position[2]).abs()<4.0
+                    && (d.position.y-position[1]).abs()<4.0
+            }).take(16).collect();
+            let horizontal=local.iter().filter(|d|{
+                (d.position.x-position[0]).abs()<1.5
+                    && (d.position.z-position[2]).abs()<1.5
+            }).count();
+            let touch=local.iter().filter(|d|{
+                d.pickup_delay==0
+                    && d.target.is_none_or(|t|t==uuid)
+                    && (d.position.x-position[0]).abs()<1.5
+                    && (d.position.z-position[2]).abs()<1.5
+                    && d.position.y>position[1]-0.6
+                    && d.position.y<position[1]+2.4
+            }).count();
+            log::info!(
+                "Offline ecosystem {}: item pickup geometry local_drops={} horizontal_near={} actually_touchable={} sampled_y={}",
+                host.hub.guests[gi].name,local.len(),horizontal,touch,
+                local.first().map_or("none".to_owned(),|d|format!("{:.2}",d.position.y))
+            );
         }
         let near: Vec<_> = self
             .dropped
