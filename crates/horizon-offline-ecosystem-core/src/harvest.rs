@@ -1,7 +1,10 @@
 //! Bounded evidence record for actual Minecraft resource harvesting.
 //! ACKs or vanished blocks cannot independently prove an item was collected.
 //! Correlation between block removal and inventory increase is not causal proof.
-pub const HARVEST_TIMEOUT_TICKS: u64 = 200;
+// Real survival STOP may schedule a delayed break; an 85-tick attempt can
+// remain in flight long after STOP. Keep the watched block in view long
+// enough to observe normal slow-tool/block processing, but always expire.
+pub const HARVEST_TIMEOUT_TICKS: u64 = 400;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HarvestStatus {
@@ -74,7 +77,23 @@ mod tests {
         let mut e=HarvestEvidence::new([1,64,1],0,0);
         assert_eq!(e.observe(80,Some(false),0),HarvestStatus::BlockRemovedWithoutPickup);
         assert_eq!(e.observe(100,None,0),HarvestStatus::BlockRemovedWithoutPickup);
-        assert_eq!(e.observe(200,None,0),HarvestStatus::UnverifiedTimeout);
+        assert_eq!(e.observe(200,None,0),HarvestStatus::BlockRemovedWithoutPickup);
+        assert_eq!(e.observe(400,None,0),HarvestStatus::UnverifiedTimeout);
+    }
+    #[test]
+    fn delayed_survival_break_at_old_deadline_stays_observable(){
+        let mut e=HarvestEvidence::new([1,64,1],0,0);
+        assert_eq!(e.observe(85,Some(true),0),HarvestStatus::Pending);
+        assert_eq!(e.observe(200,Some(true),0),HarvestStatus::Pending);
+        // Server-side delayed destruction, after the prior 200-tick timeout.
+        assert_eq!(e.observe(245,Some(false),0),HarvestStatus::BlockRemovedWithoutPickup);
+        assert_eq!(e.observe(253,Some(false),1),HarvestStatus::ObservedWoodGain{gained:1});
+    }
+    #[test]
+    fn timeout_still_bounds_unverified_slow_mining(){
+        let mut e=HarvestEvidence::new([1,64,1],90,0);
+        assert_eq!(e.observe(489,None,0),HarvestStatus::Pending);
+        assert_eq!(e.observe(490,None,0),HarvestStatus::UnverifiedTimeout);
     }
     #[test]
     fn wood_gain_alone_does_not_prove_target_was_removed(){
