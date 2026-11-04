@@ -8,6 +8,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender},
+        Mutex,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -15,6 +16,7 @@ use std::{
 use ecosystem_core::{
     BotView, Intent, LocalObservation, Needs, Personality, choose_intent,
     navigation::TargetMemory,
+    harvest::{HarvestEvidence,HarvestStatus},
 };
 use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
@@ -31,6 +33,9 @@ struct Survey {
     wood_inventory: u16,
     hotbar_food_slot: Option<u8>,
     nearby_log: Option<[i32; 3]>,
+    /// The exact requested mining target, only if its loaded block could be
+    /// inspected by the authoritative server in this survey.
+    watched_log: Option<([i32;3],bool)>,
     /// At most 32 nearby real server blocks; unrecognized/absent blocks
     /// are never treated as resources. Not yet an occlusion-aware view.
     logs: Vec<[i32; 3]>,
@@ -39,6 +44,7 @@ struct SurveySink {
     name: String,
     tx: SyncSender<Survey>,
     first_observation_logged: bool,
+    watched_target: Arc<Mutex<Option<[i32;3]>>>,
 }
 
 /// Temporary one-thread-per-nearby-player structure, bounded to 3.
@@ -158,18 +164,20 @@ impl ExperimentalBots {
                 }
             };
             let (tx,rx)=mpsc::sync_channel(1);
+            let watched_target=Arc::new(Mutex::new(None));
+            let worker_target=watched_target.clone();
             let flag=stop.clone();
             let worker_name=name.clone();
             match thread::Builder::new().name(format!("eco-local-{i}"))
                 .spawn(move||{
-                    if let Err(error)=run_local(pipe,&worker_name,i,flag,rx){
+                    if let Err(error)=run_local(pipe,&worker_name,i,flag,rx,worker_target){
                         log::warn!("Offline ecosystem {worker_name}: {error}");
                     }
                 })
             {
                 Ok(worker)=>{
                     workers.push(worker);
-                    senders.push(SurveySink{name,tx,first_observation_logged:false});
+                    senders.push(SurveySink{name,tx,first_observation_logged:false,watched_target});
                 },
                 Err(error)=>log::warn!("Offline ecosystem: worker spawn failed: {error}"),
             }
@@ -184,7 +192,7 @@ impl ExperimentalBots {
     /// occluded blocks in that radius may be discovered. Never scan an
     /// unloaded chunk, never synthesize a block or resource.
     pub(super) fn survey<F,G>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G)
-    where F: FnMut([i32;3])->bool, G: FnMut(&str)->bool
+    where F: FnMut([i32;3])->Option<bool>, G: FnMut(&str)->bool
     {
         self.survey_ticks+=1;
         if self.survey_ticks%8!=0{return;}
@@ -196,8 +204,16 @@ impl ExperimentalBots {
             let pos=guest.position;
             if !pos.iter().all(|x|x.is_finite()){continue;}
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
-            let logs=log_candidates(center,&mut is_log);
+            let logs=log_candidates(center,|here|is_log(here)==Some(true));
             let nearest=logs.first().copied();
+            let watched_log=sink.watched_target.try_lock().ok()
+                .and_then(|guard|*guard)
+                .filter(|target|{
+                    (target[0]-center[0]).abs()<=3
+                        && (-1..=2).contains(&(target[1]-center[1]))
+                        && (target[2]-center[2]).abs()<=3
+                })
+                .and_then(|target|is_log(target).map(|is_log|(target,is_log)));
             let (food_inventory,wood_inventory,hotbar_food_slot)=
                 inventory_supply(&guest.inventory,&mut is_edible);
             // One outstanding observation maximum per player. If a worker
@@ -211,6 +227,7 @@ impl ExperimentalBots {
                 wood_inventory,
                 hotbar_food_slot,
                 nearby_log:nearest,
+                watched_log,
                 logs,
             });
             if sent.is_ok() && !sink.first_observation_logged {
@@ -232,6 +249,7 @@ fn run_local(
     index:usize,
     stop:Arc<AtomicBool>,
     rx:Receiver<Survey>,
+    watched_target:Arc<Mutex<Option<[i32;3]>>>,
 )->Result<(),String>{
     let mut player=LocalPlayer::join(pipe,name,2)?;
     let mut origin:Option<[f64;2]>=None;
@@ -241,6 +259,7 @@ fn run_local(
     // Last-known resource locations and failed-approach history belong to
     // this individual, not a world-wide omniscient shared list.
     let mut target_memory=TargetMemory::new();
+    let mut harvest:Option<HarvestEvidence>=None;
     // The server enforces reach, progress and drops. The bot only records
     // attempted transactions; no resources are credited speculatively.
     let mut mining:Option<([i32;3],u64)>=None;
@@ -252,6 +271,30 @@ fn run_local(
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
         for mut received in rx.try_iter(){
+            if let Some(probe)=harvest.as_mut(){
+                let exists=received.watched_log.and_then(|(pos,is_log)|
+                    (pos==probe.target).then_some(is_log));
+                match probe.observe(received.tick,exists,received.wood_inventory){
+                    HarvestStatus::ObservedWoodGain{gained}=>{
+                        log::info!(
+                            "Offline ecosystem {name}: correlated log removal and real inventory gain +{gained} at {:?}",
+                            probe.target
+                        );
+                        harvest=None;
+                        attempts=None;
+                        if let Ok(mut target)=watched_target.lock(){*target=None;}
+                    },
+                    HarvestStatus::UnverifiedTimeout=>{
+                        log::debug!(
+                            "Offline ecosystem {name}: mining unverified (no correlated drop pickup)"
+                        );
+                        target_memory.avoid(probe.target,received.tick);
+                        harvest=None;
+                        if let Ok(mut target)=watched_target.lock(){*target=None;}
+                    },
+                    _=>{},
+                }
+            }
             // Only consider logs on approximately the same level while
             // vertical navigation and obstacle handling remain unavailable.
             // This also prevents getting stuck forever targeting tall trees.
@@ -276,12 +319,12 @@ fn run_local(
         // disappear due to another player or a world change; the observation
         // only establishes that it is no longer present.
         if let Some((target,started))=mining {
-            if !survey.logs.contains(&target){
+            if survey.watched_log==Some((target,false)){
                 player.abort_mining(target,1,mining_sequence)?;
                 mining_sequence+=1;
                 mining=None;
                 attempts=None;
-                log::debug!("Offline ecosystem {name}: observed mining target absent");
+                log::debug!("Offline ecosystem {name}: exact server block observation confirmed target no longer log");
             } else if survey.tick.saturating_sub(started)>=85{
                 player.finish_mining(target,1,mining_sequence)?;
                 mining_sequence+=1;
@@ -291,6 +334,18 @@ fn run_local(
                 player.client_tick_end()?;
                 continue;
             }
+        }
+        if let Some(probe)=harvest.as_ref().filter(|h|h.block_removed()){
+            // Mining drops fall into the world rather than appearing in the
+            // player's inventory. Move toward the former log to pick them up.
+            let x=f64::from(probe.target[0])+0.5;
+            let z=f64::from(probe.target[2])+0.5;
+            let delta=(survey.position[0]-x).hypot(survey.position[2]-z);
+            if delta>0.55 && (survey.position[1]-f64::from(probe.target[1])).abs()<1.5{
+                let _=player.steer_xz([x,z]);
+            }
+            player.client_tick_end()?;
+            continue;
         }
         let mut exploring=false;
         match decide(survey,index){
@@ -315,13 +370,18 @@ fn run_local(
                         // Last-known location only: investigate, never mine
                         // an unobserved or already-removed block.
                         exploring=true;
-                    } else if mining.is_none() && survey.tick>=mine_cooldown{
+                    } else if mining.is_none() && harvest.is_none() && survey.tick>=mine_cooldown{
                         let used=attempts.filter(|(p,_)|*p==log).map_or(0,|(_,n)|n);
                         if used<2{
                             player.begin_mining(log,1,mining_sequence)?;
                             mining_sequence+=1;
                             attempts=Some((log,used+1));
                             mining=Some((log,survey.tick));
+                            harvest=Some(HarvestEvidence::new(
+                                log,survey.tick,survey.wood_inventory
+                            ));
+                            if let Ok(mut target)=watched_target.lock(){*target=Some(log);}
+                            log::info!("Offline ecosystem {name}: mining attempt started at {:?}",log);
                         } else {
                             // Tried twice without a confirmed block removal.
                             // Consider a different observed log for a while.
@@ -371,7 +431,7 @@ mod tests{
             tick:0,
             position:[0.5,64.,0.5],food:20,health:20.,
             food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
-            nearby_log:None, logs:vec![],
+            nearby_log:None,watched_log:None, logs:vec![],
         };
         assert_eq!(decide(&survey,0),Intent::Explore);
         survey.nearby_log=Some([1,64,0]);

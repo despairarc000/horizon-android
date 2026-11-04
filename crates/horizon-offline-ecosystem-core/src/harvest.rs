@@ -30,6 +30,7 @@ impl HarvestEvidence {
     /// block_is_log: Some(true) only for an authoritative loaded log,
     /// Some(false) only when that exact block was read and was NOT a log,
     /// None for unloaded/out-of-range/unknown. Never turn None into false.
+    pub fn block_removed(&self)->bool {self.removed_at.is_some()}
     pub fn observe(
         &mut self, tick:u64, block_is_log:Option<bool>,
         real_wood_inventory:u16

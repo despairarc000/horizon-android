@@ -2358,9 +2358,9 @@ impl Game<'_> {
             if let Some(bots)=&mut host.experimental_bots {
                 bots.survey(&host.hub.guests, self.dim.id(), |position|{
                     let [x,y,z]=position;
-                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return false;}
+                    if !self.world.chunks.contains_key(&(x>>4,z>>4)){return None;}
                     let name=&self.res.facts().get(self.world.block(x,y,z)).name;
-                    name.ends_with("_log") || name.ends_with("_stem")
+                    Some(name.ends_with("_log") || name.ends_with("_stem"))
                 },|item|{
                     self.res.items().get(item).is_some_and(|info|info.food.is_some())
                 });

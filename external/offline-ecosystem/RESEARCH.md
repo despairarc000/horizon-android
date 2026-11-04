@@ -61,3 +61,9 @@ This is still a local steering prototype: no full voxel pathfinder, line-of-sigh
 The first two-bot **actual headless world** run rejected both bot names with `multiplayer.disconnect.not_whitelisted`, while the owner loaded normally. Horizon correctly keeps the private integrated server locked except for the owner and registered local seats. Experimental identities now opt into this existing **memory-only** seat registry; external-network clients spoofing their names remain denied, and no operator/creative privileges are granted. Added an identity-and-admission unit test.
 
 The same run timed out because `--world-frames` only advances while the graphical client has reached a specific playing state. Headless acceptance now uses a bounded `--frames` counter, records the console log in a private scratch directory, and checks that **both** named bots actually logged in (not merely that their threads started). This still requires a passing resource-backed CI run before being declared working.
+
+## Exact-target mining evidence / actual item pickup
+
+Mining requests now have a per-bot watched target: the server performs a **direct block lookup** for the exact active mining coordinate, returning `None` for an unloaded or unobserved block rather than pretending it disappeared. A bounded evidence record distinguishes a mining packet, confirmed disappearance, and a **real increase** in that guest's own wood inventory. The bot moves toward the removed block to attempt ordinary item pickup, because Horizon only picks up nearby dropped entities. A correlated result is logged as such; it does not fabricate inventory or prove causality if another entity broke the same block.
+
+This is still preliminary: the bot needs line-of-sight, 3D navigation and an actual successful inventory gain observed in a resource-backed test. The tracker expires after 200 server ticks without confirmation.
