@@ -214,6 +214,21 @@ fn terrain_candidates<F:FnMut([i32;3])->bool>(
     out
 }
 
+/// Prefer logs whose drops may fall into the standing player's real
+/// pickup box. Breaking support blocks a level below the feet is valid
+/// survival mining, but their drops can settle below pickup height without
+/// a proper descent controller. This affects only target order, not sensing,
+/// block access permissions, or inventory credits.
+fn prefer_pickup_height(logs:&mut [[i32;3]], feet:[f64;3]){
+    let center=[feet[0].floor() as i32,feet[1].floor() as i32,feet[2].floor() as i32];
+    logs.sort_by_key(|p|{
+        let dx=(i64::from(p[0])-i64::from(center[0])).abs();
+        let dz=(i64::from(p[2])-i64::from(center[2])).abs();
+        let dy=(i64::from(p[1])-i64::from(center[1])).abs();
+        (p[1]<center[1],dx+dz,dy,p[0],p[1],p[2])
+    });
+}
+
 /// The next ground tile on a real obstacle-aware, local route to a log.
 /// No jump/swim/drop ability is inferred when the local grid has no route.
 fn ground_step_to_log(survey:&Survey,log:[i32;3])->Option<[f64;2]>{
@@ -413,9 +428,10 @@ fn run_local(
             // Only consider logs on approximately the same level while
             // vertical navigation and obstacle handling remain unavailable.
             // This also prevents getting stuck forever targeting tall trees.
-            let walkable_height:Vec<[i32;3]>=received.logs.iter().copied()
+            let mut walkable_height:Vec<[i32;3]>=received.logs.iter().copied()
                 .filter(|p|(received.position[1]-f64::from(p[1])).abs()<1.5)
                 .collect();
+            prefer_pickup_height(&mut walkable_height,received.position);
             // Only real, server-observed positions count as movement progress.
             // A remembered target can be investigated, but not treated as
             // confirmed still-existing or credited with any item rewards.
@@ -595,6 +611,20 @@ mod tests{
         survey.food_inventory=1;
         survey.hotbar_food_slot=Some(2);
         assert_eq!(decide(&survey,0),Intent::Eat);
+    }
+    #[test]
+    fn pickup_aware_target_priority_prefers_collectible_log_elevations(){
+        let mut logs=vec![[0,63,0],[2,65,0],[1,64,0],[0,65,1]];
+        prefer_pickup_height(&mut logs,[0.5,64.0,0.5]);
+        assert_eq!(logs[0],[0,65,1]);
+        assert_eq!(logs[1],[1,64,0]);
+        assert_eq!(logs[2],[2,65,0]);
+        assert_eq!(logs[3],[0,63,0]);
+        // With no level or upper logs, lower blocks remain visible
+        // rather than inventing a new resource or silently hiding all wood.
+        let mut low=[[0,63,0]];
+        prefer_pickup_height(&mut low,[0.5,64.0,0.5]);
+        assert_eq!(low,[[0,63,0]]);
     }
     #[test]fn local_log_survey_is_bounded_and_nearest_first(){
         let origin=[0,64,0];
