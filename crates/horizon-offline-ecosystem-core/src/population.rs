@@ -323,7 +323,7 @@ mod tests {
         s.bots[1].region=0;s.bots[1].needs.hunger=40;
         s.bots[0].trust.insert(1,0.9);
         s.act(0);
-        assert_eq!(s.events.last().unwrap().intent,Intent::ShareFood);
+        assert_eq!(s.events.back().unwrap().intent,Intent::ShareFood);
         assert_eq!(s.bots[1].food,1);
         assert!(s.bots[1].trust.get(&0).copied().unwrap_or(0.)>0.);
         s.check().unwrap();
