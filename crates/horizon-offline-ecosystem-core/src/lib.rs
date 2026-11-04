@@ -189,3 +189,5 @@ pub mod harvest;
 pub mod local_path;
 pub mod explore;
 pub mod terrain_path;
+/// Per-individual proximity-based social memory; no omniscient relationships.
+pub mod social;
