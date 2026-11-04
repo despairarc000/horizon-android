@@ -356,8 +356,16 @@ mod tests {
     }
     #[test]fn event_log_is_bounded(){
         let mut world=demo();
-        world.step(5000).unwrap();
+        // A fixed number of ticks need not yield that many actions; force
+        // more than MAX_EVENTS actions to test actual eviction semantics.
+        for _ in 0..(MAX_EVENTS+20){
+            world.tick+=1;
+            world.act(0);
+        }
         assert_eq!(world.events.len(),MAX_EVENTS);
+        assert_eq!(world.events.front().unwrap().tick,21);
+        assert_eq!(world.events.back().unwrap().tick,(MAX_EVENTS+20) as u64);
+        world.check().unwrap();
         assert!(world.to_snapshot_json().is_ok());
     }
 }
