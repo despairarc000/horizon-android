@@ -125,6 +125,8 @@ class ItemPickupGeometryTests(unittest.TestCase):
             "Offline ecosystem EcoAI0: server destroy drop_entities=2 sample=minecraft:oak_log@0.5,63.5,0.5",
             "Offline ecosystem EcoAI0: item pickup geometry local_drops=2 horizontal_near=2 actually_touchable=0 sampled_y=63.20",
             "Offline ecosystem EcoAI0: item pickup geometry local_drops=2 horizontal_near=2 actually_touchable=1 sampled_y=64.00",
+            "Offline ecosystem EcoAI0: server accepted wood pickup item=minecraft:oak_log count=1 drop_entity=123",
+            "Offline ecosystem EcoAI1: server accepted wood pickup item=minecraft:dark_oak_log count=2 drop_entity=124",
             "Offline ecosystem EcoAI1: server destroy drop_entities=0 sample=",
         ]
         summary=item_pickup_report(lines)
@@ -133,7 +135,21 @@ class ItemPickupGeometryTests(unittest.TestCase):
         self.assertEqual(summary["max_local_drop_entities"],2)
         self.assertEqual(summary["max_horizontally_near"],2)
         self.assertEqual(summary["max_touchable"],1)
+        self.assertEqual(summary["server_accepted_wood_events"],2)
+        self.assertEqual(summary["server_accepted_wood_items"],3)
         self.assertEqual(item_pickup_report([])["new_server_drop_entities"],0)
+        self.assertEqual(item_pickup_report([])["server_accepted_wood_items"],0)
+
+class ServerAcceptedPickupTests(unittest.TestCase):
+    def test_actual_acceptance_is_not_inferred_from_geometry_or_spawn(self):
+        lines=[
+            "Offline ecosystem EcoAI0: server destroy drop_entities=1 sample=minecraft:oak_log@0.5,64.2,0.5",
+            "Offline ecosystem EcoAI0: item pickup geometry local_drops=1 horizontal_near=1 actually_touchable=1 sampled_y=64.2",
+            "Offline ecosystem EcoAI0: correlated log removal and real inventory gain +1 at [0, 64, 0]",
+        ]
+        self.assertEqual(item_pickup_report(lines)["server_accepted_wood_events"],0)
+        self.assertEqual(item_pickup_report(lines)["server_accepted_wood_items"],0)
+
 
 class DownhillMovementTests(unittest.TestCase):
     def test_only_server_confirmed_lower_surface_counts_as_landing(self):
