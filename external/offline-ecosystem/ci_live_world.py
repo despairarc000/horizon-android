@@ -263,7 +263,7 @@ DOWNHILL_REJECTED = re.compile(
 
 VERTICAL_LANDING = re.compile(
     r"Offline ecosystem (EcoAI[01]): server-authoritative "
-    r"(?:uphill|downhill) landing at \\[(-?\\d+),\\s*(-?\\d+),\\s*(-?\\d+)\\]"
+    r"(?:uphill|downhill) landing at \[(-?\d+),\s*(-?\d+),\s*(-?\d+)\]"
 )
 
 
