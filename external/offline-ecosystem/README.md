@@ -25,3 +25,7 @@ The Python simulator is a small **logical room graph**, not actual Minecraft vox
 5. Benchmark bot counts and game performance on the Android phone.
 
 No actual Minecraft bot, generated APK, or Android performance result is claimed yet. Keep vanilla rules and game resources intact.
+
+## Persistence and memory bounds
+
+The Rust `Population` now supports a versioned, deterministic JSON snapshot with validation on restore. It conserves finite resources and caps remembered event history at 4096 events. This covers **logical ecosystem state only**; saving and restoring genuine Minecraft player and chunk state remains a later integration task.

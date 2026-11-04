@@ -1,9 +1,11 @@
 //! Offline Rain World-style population on a finite room graph.
 //! Logic model only; future server adapter must validate Minecraft actions.
 use std::collections::{BTreeMap,BTreeSet,VecDeque};
+const MAX_EVENTS: usize = 4096;
+const MAX_SAVE_BYTES: usize = 10 * 1024 * 1024;
 use crate::{BotView,Intent,LocalObservation,Needs,Personality,Resolution,choose_intent};
 
-#[derive(Clone,Debug,PartialEq,Eq)]
+#[derive(Clone,Debug,PartialEq,Eq)
 pub struct Region {
     pub exits:Vec<usize>,
     pub food:u32,
@@ -15,7 +17,7 @@ impl Region {
         Self{exits,food,wood,shelter:false}
     }
 }
-#[derive(Clone,Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)
 pub struct Individual {
     pub id:u32,
     pub region:usize,
@@ -35,22 +37,27 @@ impl Individual {
             visited:BTreeSet::new(),alive:true}
     }
 }
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+#[derive(Clone,Copy,Debug,PartialEq,Eq)
 pub struct Event {
     pub tick:u64,pub bot_id:u32,pub intent:Intent,
     pub from:usize,pub to:usize,
 }
-#[derive(Clone,Debug,PartialEq)]
+#[derive(Clone,Debug,PartialEq)
 pub struct Population {
     pub regions:Vec<Region>,
     pub bots:Vec<Individual>,
     pub observer:usize,
     pub tick:u64,
-    pub events:Vec<Event>,
+    pub events:VecDeque<Event>,
     pub food_eaten:u64,
     initial_wood:u64,
     initial_food:u64,
     random_state:u64,
+}
+#[derive(serde::Serialize,serde::Deserialize)]
+struct SaveEnvelope{
+    version:u32,
+    population:Population,
 }
 impl Population {
     pub fn new(mut regions:Vec<Region>,mut bots:Vec<Individual>,observer:usize,seed:u64)->Result<Self,String>{
@@ -65,7 +72,7 @@ impl Population {
         bots.sort_by_key(|b|b.id);
         if bots.iter().any(|b|b.region>=size||b.trust.values().any(|&v|!v.is_finite()||!(-1.0..=1.0).contains(&v))) ||
            bots.windows(2).any(|w|w[0].id==w[1].id){return Err("invalid bot state".into());}
-        let mut p=Self{regions,bots,observer,tick:0,events:Vec::new(),food_eaten:0,initial_wood:0,initial_food:0,random_state:seed.max(1)};
+        let mut p=Self{regions,bots,observer,tick:0,events:VecDeque::new(),food_eaten:0,initial_wood:0,initial_food:0,random_state:seed.max(1)};
         p.initial_wood=p.wood_total();p.initial_food=p.food_total();Ok(p)
     }
     pub fn wood_total(&self)->u64{
@@ -209,8 +216,56 @@ impl Population {
                 if !choices.is_empty(){let pick=self.rand(choices.len());self.bots[i].region=choices[pick];}
             }
         }
-        self.events.push(Event{tick:self.tick,bot_id:self.bots[i].id,intent,
+        if self.events.len()>=MAX_EVENTS{self.events.pop_front();}
+        self.events.push_back(Event{tick:self.tick,bot_id:self.bots[i].id,intent,
             from,to:self.bots[i].region});
+    }
+    /// Versioned, deterministic save of the logical population only.
+    /// This does not save real Minecraft chunks or player inventories yet.
+    pub fn to_snapshot_json(&self)->Result<String,String>{
+        self.validate_snapshot()?;
+        serde_json::to_string(&SaveEnvelope{version:1,population:self.clone()})
+            .map_err(|e|e.to_string())
+    }
+    pub fn from_snapshot_json(raw:&str)->Result<Self,String>{
+        if raw.len()>MAX_SAVE_BYTES{return Err("population snapshot exceeds 10 MiB".into());}
+        let envelope:SaveEnvelope=serde_json::from_str(raw).map_err(|e|e.to_string())?;
+        if envelope.version!=1{return Err("unsupported population snapshot version".into());}
+        envelope.population.validate_snapshot()?;
+        Ok(envelope.population)
+    }
+    fn validate_snapshot(&self)->Result<(),String>{
+        self.check()?;
+        if self.regions.is_empty()||self.observer>=self.regions.len(){
+            return Err("invalid snapshot observer or regions".into());
+        }
+        for (i,r) in self.regions.iter().enumerate(){
+            if r.exits.iter().any(|&j|j>=self.regions.len()||j==i||
+                !self.regions[j].exits.contains(&i))
+                || r.exits.windows(2).any(|w|w[0]>=w[1]){
+                return Err("invalid snapshot graph".into());
+            }
+        }
+        if self.bots.windows(2).any(|w|w[0].id>=w[1].id){
+            return Err("invalid or unsorted bot ids".into());
+        }
+        if self.bots.iter().any(|b|{
+            let p=b.personality;
+            ![p.curiosity,p.aggression,p.sociability].iter()
+                .all(|x|x.is_finite()&&(0.0..=1.0).contains(x))
+            || b.needs.hunger>100||b.needs.energy>100||b.needs.health>100
+            || b.known_food.keys().any(|&i|i>=self.regions.len())
+            || b.visited.iter().any(|&i|i>=self.regions.len())
+        }){
+            return Err("invalid bot snapshot fields".into());
+        }
+        if self.random_state==0||self.events.len()>MAX_EVENTS||
+            self.events.iter().any(|e|e.tick>self.tick||e.from>=self.regions.len()||
+                e.to>=self.regions.len()||
+                !self.bots.iter().any(|b|b.id==e.bot_id)){
+            return Err("invalid population snapshot counters".into());
+        }
+        Ok(())
     }
     pub fn step(&mut self,n:u64)->Result<(),String>{
         for _ in 0..n{
@@ -278,5 +333,31 @@ mod tests {
         assert_eq!(s.tier(0),Resolution::Realized);
         assert_eq!(s.tier(1),Resolution::Abstract);
         assert_eq!(s.tier(2),Resolution::Coarse);
+    }
+
+    #[test]fn snapshot_replays_deterministically(){
+        let mut before=demo();
+        before.step(150).unwrap();
+        let saved=before.to_snapshot_json().unwrap();
+        let mut restored=Population::from_snapshot_json(&saved).unwrap();
+        assert_eq!(before,restored);
+        before.step(200).unwrap();
+        restored.step(200).unwrap();
+        assert_eq!(before,restored);
+    }
+    #[test]fn snapshot_rejects_tampering(){
+        let before=demo();
+        let mut raw:serde_json::Value=serde_json::from_str(&before.to_snapshot_json().unwrap()).unwrap();
+        raw["population"]["regions"][0]["food"]=serde_json::json!(999);
+        assert!(Population::from_snapshot_json(&raw.to_string()).is_err());
+        raw["population"]["regions"][0]["food"]=serde_json::json!(3);
+        raw["version"]=serde_json::json!(99);
+        assert!(Population::from_snapshot_json(&raw.to_string()).is_err());
+    }
+    #[test]fn event_log_is_bounded(){
+        let mut world=demo();
+        world.step(5000).unwrap();
+        assert_eq!(world.events.len(),MAX_EVENTS);
+        assert!(world.to_snapshot_json().is_ok());
     }
 }
