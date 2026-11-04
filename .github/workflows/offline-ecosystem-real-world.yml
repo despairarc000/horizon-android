@@ -64,6 +64,8 @@ jobs:
       # beyond the current safe-grid pickup target; diagnose missing routes.
       # Exercise normal survival mining of reachable upper trunk logs,
       # so falling drops may enter the player's pickup box without a jump.
+      # Enable pinned real block collisions in the LAN stone-ledge jump
+      # fixture; require a genuine server-authoritative landing.
       # Re-run the LAN step-up fixture after correcting its public crate
       # import, and try uphill exploration in the pinned natural world.
       # Run a deterministic stone-ledge survival jump test in the real
