@@ -158,6 +158,23 @@ impl ExplorationMemory {
         blocked
     }
 
+    /// Were all CURRENTLY REACHABLE, observed level-ground cells actually
+    /// visited? Disconnected terrain is not a reason to keep circling a
+    /// smaller accessible plateau. Never infer cells beyond the server scan.
+    pub fn locally_exhausted(
+        &self,start:[i32;2],safe:&[[i32;2]],tick:u64
+    )->bool{
+        if !safe.contains(&start){return true;}
+        let available:Vec<_>=safe.iter().copied().filter(|p|
+            *p==start || self.blocked_steps.get(p).is_none_or(|until|*until<=tick)
+        ).collect();
+        available.iter().all(|&p|{
+            if p==start{return self.visited.contains_key(&p);}
+            first_ground_step(start,&[p],&available).is_none()
+                || self.visited.contains_key(&p)
+        })
+    }
+
     /// Choose a first cardinal step toward an observed reachable tile.
     /// Temporarily blocked steps cannot be used as transit cells, not just
     /// final destinations. This prevents retrying the same failed edge.
@@ -270,6 +287,29 @@ mod tests {
         m.observed_landing([2,65,0],[3,66,0],4);
         assert_eq!(m.avoid_immediate_return([1,65,0],6),Some([0,64,0]));
     }
+    #[test]
+    fn flat_exhaustion_requires_real_visits_not_proposed_waypoints(){
+        let mut m=ExplorationMemory::new();
+        let safe=[[0,0],[1,0],[2,0]];
+        assert!(!m.locally_exhausted([0,0],&safe,1));
+        m.choose_next([0,0],&safe,1,0);
+        assert!(!m.locally_exhausted([0,0],&safe,1));
+        m.choose_next([1,0],&safe,9,0);
+        assert!(!m.locally_exhausted([1,0],&safe,9));
+        m.choose_next([2,0],&safe,17,0);
+        assert!(m.locally_exhausted([2,0],&safe,17));
+    }
+
+    #[test]
+    fn disconnected_unknown_side_does_not_block_flat_exhaustion(){
+        let mut m=ExplorationMemory::new();
+        let safe=[[0,0],[1,0],[8,0]];
+        m.choose_next([0,0],&safe,1,0);
+        m.choose_next([1,0],&safe,9,0);
+        assert!(m.locally_exhausted([1,0],&safe,17));
+        assert!(m.locally_exhausted([12,0],&safe,17));
+    }
+
     #[test]
     fn explores_beyond_initial_spawn_neighborhood() {
         let mut e = ExplorationMemory::new();
