@@ -55,6 +55,34 @@ jobs:
         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
       - name: Assert server-authoritative movement and real block action
         run: cargo test -p horizon-client --locked --no-default-features --test lan_bot offline_ecosystem_player_joins_real_horizon_hub_through_memory -- --nocapture
+      - name: Run headless integrated world with two opt-in offline bots
+        env:
+          HORIZON_ECOSYSTEM_EXPERIMENTAL_BOTS: '2'
+        run: |
+          set -euo pipefail
+          mkdir -p .local/ecosystem-headless
+          timeout 240s cargo run --locked --no-default-features -p horizon-client --bin horizon-client -- \
+            --resources "$PWD/.local/horizon-client/26.3" \
+            --headless --world EcoWorld --seed 42 \
+            --world-frames 160 --timeout-seconds 160 \
+            --render-distance 2 --name EcoHost --no-pause \
+            --game-dir "$PWD/.local/ecosystem-headless" \
+            --home "$PWD/.local/ecosystem-headless" \
+            --smoke-report "$PWD/.local/ecosystem-headless/report.json"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('.local/ecosystem-headless')
+          report=json.loads((root/'report.json').read_text())
+          print('Headless world smoke:',report)
+          assert report.get('error') is None, report
+          assert report.get('player') is not None, 'No real integrated-server player spawned'
+          assert report.get('chunks',0)>0, 'No real world chunks loaded'
+          logs='\n'.join(p.read_text(errors='replace') for p in root.rglob('*.log'))
+          assert 'Offline ecosystem: started 2 opt-in local bots' in logs, (
+              'Offline ecosystem worker initialization not observed in game log')
+          print('Offline ecosystem headless server initialization verified')
+          PY
       - name: Check resource boundary
         if: always()
         run: |
