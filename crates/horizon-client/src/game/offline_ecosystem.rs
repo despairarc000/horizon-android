@@ -15,7 +15,7 @@ use std::{
 use ecosystem_core::{
     BotView, Intent, LocalObservation, Needs, Personality, choose_intent,
 };
-use horizon_client::lan::{guest::Guest, hub::Hub};
+use horizon_client::{items::ItemStack, lan::{guest::Guest, hub::Hub}};
 use horizon_offline_ecosystem_client::LocalPlayer;
 
 /// Only the server observes actual Minecraft state. A bounded local survey is
@@ -26,6 +26,9 @@ struct Survey {
     position: [f64; 3],
     health: f32,
     food: i32,
+    food_inventory: u16,
+    wood_inventory: u16,
+    hotbar_food_slot: Option<u8>,
     nearby_log: Option<[i32; 3]>,
     /// At most 32 nearby real server blocks; unrecognized/absent blocks
     /// are never treated as resources. Not yet an occlusion-aware view.
@@ -77,8 +80,8 @@ fn decide(survey: &Survey, index: usize) -> Intent {
     let bot=BotView {
         needs,
         personality:profile(index),
-        food_inventory:0,
-        wood_inventory:0,
+        food_inventory:survey.food_inventory,
+        wood_inventory:survey.wood_inventory,
     };
     choose_intent(&bot,&LocalObservation {
         local_wood:u16::from(survey.nearby_log.is_some()),
@@ -106,6 +109,32 @@ fn log_candidates<F:FnMut([i32;3])->bool>(
     found.sort_by_key(|(distance,p)|(*distance,p[0],p[1],p[2]));
     found.truncate(32);
     found.into_iter().map(|(_,p)|p).collect()
+}
+
+/// Inventory is the server's 36-slot survival inventory, hotbar first.
+/// Only food already in the hotbar is currently actionable. No imaginary
+/// supplies are added to the bot's decision state.
+fn inventory_supply<F:FnMut(&str)->bool>(
+    slots:&[Option<ItemStack>], mut is_edible:F
+)->(u16,u16,Option<u8>){
+    let mut food=0u32;
+    let mut wood=0u32;
+    let mut hotbar_food=None;
+    for (i,stack) in slots.iter().enumerate(){
+        let Some(stack)=stack.as_ref() else {continue;};
+        if stack.count==0{continue;}
+        let name=stack.item.as_ref();
+        if name.ends_with("_log") || name.ends_with("_stem") || name.ends_with("_planks"){
+            wood=wood.saturating_add(stack.count);
+        }
+        if i<9 && is_edible(name){
+            food=food.saturating_add(stack.count);
+            if hotbar_food.is_none(){hotbar_food=Some(i as u8);}
+        }
+    }
+    (food.min(u32::from(u16::MAX)) as u16,
+     wood.min(u32::from(u16::MAX)) as u16,
+     hotbar_food)
 }
 
 impl ExperimentalBots {
@@ -152,8 +181,8 @@ impl ExperimentalBots {
     /// probes nearby logs, but is NOT visual line-of-sight perception yet;
     /// occluded blocks in that radius may be discovered. Never scan an
     /// unloaded chunk, never synthesize a block or resource.
-    pub(super) fn survey<F>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F)
-    where F: FnMut([i32;3])->bool
+    pub(super) fn survey<F,G>(&mut self, guests:&[Guest],dimension:&str,mut is_log:F,mut is_edible:G)
+    where F: FnMut([i32;3])->bool, G: FnMut(&str)->bool
     {
         self.survey_ticks+=1;
         if self.survey_ticks%8!=0{return;}
@@ -167,6 +196,8 @@ impl ExperimentalBots {
             let center=[pos[0].floor() as i32,pos[1].floor() as i32,pos[2].floor() as i32];
             let logs=log_candidates(center,&mut is_log);
             let nearest=logs.first().copied();
+            let (food_inventory,wood_inventory,hotbar_food_slot)=
+                inventory_supply(&guest.inventory,&mut is_edible);
             // One outstanding observation maximum per player. If a worker
             // is behind, discard instead of blocking the game tick.
             let _=sink.tx.try_send(Survey{
@@ -174,6 +205,9 @@ impl ExperimentalBots {
                 position:pos,
                 health:guest.health,
                 food:guest.food,
+                food_inventory,
+                wood_inventory,
+                hotbar_food_slot,
                 nearby_log:nearest,
                 logs,
             });
@@ -198,6 +232,7 @@ fn run_local(
     let mut attempts:Option<([i32;3],u8)>=None;
     let mut mining_sequence=100i32;
     let mut mine_cooldown=0u64;
+    let mut food_cooldown=0u64;
     const OFFSETS:[[f64;2];4]=[[0.8,0.0],[0.8,0.8],[0.0,0.8],[0.0,0.0]];
     while !stop.load(Ordering::Acquire){
         player.poll_one_timeout(Duration::from_millis(25))?;
@@ -264,7 +299,17 @@ fn run_local(
                     exploring=true;
                 }
             },
-            Intent::Explore=>exploring=true,
+            Intent::Eat=>{
+                if let Some(slot)=survey.hotbar_food_slot{
+                    if survey.tick>=food_cooldown{
+                        player.select_hotbar(slot)?;
+                        player.use_selected_item(mining_sequence)?;
+                        mining_sequence+=1;
+                        food_cooldown=survey.tick+40;
+                    }
+                }
+            },
+            Intent::Explore|Intent::BuildShelter=>exploring=true,
             _=>{},
         }
         if exploring {
@@ -291,6 +336,7 @@ mod tests{
         let mut survey=Survey{
             tick:0,
             position:[0.5,64.,0.5],food:20,health:20.,
+            food_inventory:0,wood_inventory:0,hotbar_food_slot:None,
             nearby_log:None, logs:vec![],
         };
         assert_eq!(decide(&survey,0),Intent::Explore);
@@ -298,6 +344,9 @@ mod tests{
         assert_eq!(decide(&survey,0),Intent::GatherWood);
         survey.food=4;
         assert_eq!(decide(&survey,0),Intent::Explore);
+        survey.food_inventory=1;
+        survey.hotbar_food_slot=Some(2);
+        assert_eq!(decide(&survey,0),Intent::Eat);
     }
     #[test]fn local_log_survey_is_bounded_and_nearest_first(){
         let origin=[0,64,0];
@@ -311,5 +360,21 @@ mod tests{
         ));
         assert_eq!(log_candidates(origin,|p|p==[3,64,0]),vec![[3,64,0]]);
         assert!(log_candidates(origin,|_|false).is_empty());
+    #[test]fn inventory_uses_only_real_item_stacks_and_hotbar_food(){
+        use std::sync::Arc;
+        let mut slots=vec![None;36];
+        slots[2]=Some(ItemStack{item:Arc::from("minecraft:apple"),count:3,damage:0,extra:None});
+        slots[16]=Some(ItemStack{item:Arc::from("minecraft:oak_log"),count:7,damage:0,extra:None});
+        slots[23]=Some(ItemStack{item:Arc::from("minecraft:bread"),count:5,damage:0,extra:None});
+        let (food,wood,slot)=inventory_supply(&slots,|name|
+            name=="minecraft:apple" || name=="minecraft:bread"
+        );
+        assert_eq!((food,wood,slot),(3,7,Some(2)));
+        slots[2]=None;
+        let (food,wood,slot)=inventory_supply(&slots,|name|
+            name=="minecraft:apple" || name=="minecraft:bread"
+        );
+        assert_eq!((food,wood,slot),(0,7,None));
+    }
     }
 }

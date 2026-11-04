@@ -45,3 +45,7 @@ This is an intentionally incomplete prototype: it does not yet do raycast visibi
 Headless bots now use a capacity-one server survey with a capped list of 32 nearby log coordinates (not LOS-aware). When a log is near and approximately level, the bot emits `PlayerAction START`, waits at least 85 non-paused server survey ticks, and emits `STOP`. Horizon's own server checks reach, protection, tool mining progress, inventory and block drops. If a surveyed block disappears the bot stops the attempt; **disappearance is not credited as a successful harvest or inventory gain**. Retries are capped to two for the same block, with a cooldown.
 
 No crafting, item pickup confirmation, vertical navigation or obstacle-aware pathfinding is implemented. The test still requires a full resource-backed world execution before we can claim a bot mined a log.
+
+## Server inventory and actual food use
+
+The opt-in survey now includes server-authoritative counts from the 36-slot inventory, distinguishing usable edible **hotbar** items from inaccessible main-inventory food, and counts actual log/stem/plank stacks. `ecosystem_core::choose_intent` consumes these counts. For hunger, the headless player can now send normal selected-hotbar and item-use packets with a 40-server-tick retry cooldown; Horizon handles and verifies any consumption. No resource is fabricated, and no inventory change is assumed before a later server survey. Moving food from the main inventory into the hotbar and actual shelter construction remain unimplemented.

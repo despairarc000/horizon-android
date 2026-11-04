@@ -2361,6 +2361,8 @@ impl Game<'_> {
                     if !self.world.chunks.contains_key(&(x>>4,z>>4)){return false;}
                     let name=&self.res.facts().get(self.world.block(x,y,z)).name;
                     name.ends_with("_log") || name.ends_with("_stem")
+                },|item|{
+                    self.res.items().get(item).is_some_and(|info|info.food.is_some())
                 });
             }
         }
