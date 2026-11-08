@@ -4,7 +4,7 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
@@ -39,6 +39,7 @@ pub fn incoming_root(home: &Path) -> PathBuf {
 
 fn safe_path(path: &str) -> bool {
     !path.is_empty()
+        && path.len() <= 512
         && !path.contains('\\')
         && !path.contains('\0')
         && !path.starts_with('/')
@@ -148,6 +149,11 @@ fn existing_file(root: &Path, relative: &str) -> Result<Option<PathBuf>> {
     if !safe_path(relative) {
         return Err("Unsafe resource transfer path".into());
     }
+    if let Ok(meta) = fs::symlink_metadata(root)
+        && (meta.file_type().is_symlink() || !meta.is_dir())
+    {
+        return Err("Unsafe resource staging root".into());
+    }
     let mut path = root.to_path_buf();
     for component in relative.split('/') {
         path.push(component);
@@ -205,9 +211,10 @@ pub fn receive_file(
     let root = incoming_root(home);
     let target = root.join(&entry.path);
     let parent = target.parent().ok_or("No destination parent")?;
-    fs::create_dir_all(parent)?;
-    // Checking again prevents following a symlink left by a malicious local provider.
+    // Refuse any existing symlink before creating directories. The receiver owns
+    // the private staging root and no other process should modify it concurrently.
     let _ = existing_file(&root, name)?;
+    fs::create_dir_all(parent)?;
     let temp = target.with_extension("share-tmp");
     if temp.exists() || fs::symlink_metadata(&temp).is_ok() {
         fs::remove_file(&temp)?;
@@ -234,10 +241,18 @@ pub fn receive_file(
 pub fn finalize(home: &Path, manifest: &Manifest) -> Result<()> {
     verify_manifest(manifest)?;
     let stage = incoming_root(home);
-    for entry in &manifest.files {
-        if !matches_file(&stage, entry)? {
-            return Err(format!("Resource transfer incomplete: {}", entry.path).into());
-        }
+    if fs::symlink_metadata(&stage)?.file_type().is_symlink() {
+        return Err("Unsafe resource staging root".into());
+    }
+    // Do not promote leftover files from an unrelated/interrupted transfer.
+    let mut actual = Vec::new();
+    scan(&stage, &stage, &mut actual)?;
+    let expected: HashMap<_, _> = manifest.files.iter().map(|entry| (&entry.path, entry)).collect();
+    if actual.len() != expected.len() || actual.iter().any(|entry| {
+        let Some(wanted) = expected.get(&entry.path) else { return true };
+        entry.bytes != wanted.bytes || !entry.sha256.eq_ignore_ascii_case(&wanted.sha256)
+    }) {
+        return Err("Resource transfer incomplete, corrupt or contains unexpected files".into());
     }
     let target = prepared_root(home);
     if target.exists() || fs::symlink_metadata(&target).is_ok() {
