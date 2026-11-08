@@ -111,6 +111,7 @@ pub mod recipe_book;
 pub mod recipe_book_screen;
 pub mod reconnect;
 pub mod resource_install;
+pub mod resource_share_manifest;
 pub mod save;
 pub mod scoreboard_cmd;
 pub mod screen_layout;
